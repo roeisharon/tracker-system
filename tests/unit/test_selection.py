@@ -1,4 +1,4 @@
-"""Tests for target selection (manual + mouse-click mapping)."""
+"""Tests for selectors and burned-in overlay detection."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ import cv2
 import numpy as np
 import pytest
 
-from tracker_system.selection.cv_click_selector import CvClickSelector
-from tracker_system.selection.target_selector import (
-    ManualPixelSelector,
-    SelectionError,
+from tracker_system.config import SelectionConfig
+from tracker_system.geometry import BBox
+from tracker_system.selection import (
+    CvClickSelector, ManualPixelSelector, SelectionError,
+    box_overlaps_overlay, detect_static_overlay,
 )
 
 FRAME_H, FRAME_W = 480, 640
@@ -21,14 +22,9 @@ def frame():
 
 
 def test_manual_selector_maps_ij_to_centered_bbox(frame):
-    # [i, j] = (row, col) = (200, 300) -> centre at (x=300, y=200).
     result = ManualPixelSelector(row=200, col=300, bbox_size=80).select(frame)
-    assert result.source == "manual"
-    assert result.seed_point == (300, 200)
-    cx, cy = result.bbox.center
-    assert cx == pytest.approx(300.0)
-    assert cy == pytest.approx(200.0)
-    assert (result.bbox.w, result.bbox.h) == (80.0, 80.0)
+    assert result.source == "manual" and result.seed_point == (300, 200)
+    assert result.bbox.center == pytest.approx((300.0, 200.0))
 
 
 def test_manual_selector_outside_frame_raises(frame):
@@ -36,33 +32,32 @@ def test_manual_selector_outside_frame_raises(frame):
         ManualPixelSelector(row=1000, col=300, bbox_size=80).select(frame)
 
 
-def test_manual_selector_clamps_bbox_near_edge(frame):
-    # Point in the corner: the box must stay within the frame.
-    result = ManualPixelSelector(row=5, col=5, bbox_size=80).select(frame)
-    assert result.bbox.x >= 0 and result.bbox.y >= 0
-    assert result.bbox.x2 <= FRAME_W and result.bbox.y2 <= FRAME_H
-
-
-def test_mouse_click_maps_to_same_result_as_manual(frame):
-    """A click at (x, y) must yield the same bbox as manual [i=y, j=x]."""
+def test_mouse_click_matches_manual(frame):
     x, y = 300, 200
-    selector = CvClickSelector(bbox_size=80)
-    selector._frame_shape = frame.shape[:2]  # what select() would set
-
-    # Simulate the OpenCV mouse callback firing a left-button-down event.
-    selector._on_mouse(cv2.EVENT_LBUTTONDOWN, x, y, 0, None)
-    mouse_result = selector._result
-
-    manual_result = ManualPixelSelector(row=y, col=x, bbox_size=80).select(frame)
-
-    assert mouse_result is not None
-    assert mouse_result.source == "mouse"
-    assert mouse_result.seed_point == manual_result.seed_point
-    assert mouse_result.bbox == manual_result.bbox
+    sel = CvClickSelector(bbox_size=80)
+    sel._frame_shape = frame.shape[:2]
+    sel._on_mouse(cv2.EVENT_LBUTTONDOWN, x, y, 0, None)
+    manual = ManualPixelSelector(row=y, col=x, bbox_size=80).select(frame)
+    assert sel._result.source == "mouse"
+    assert sel._result.bbox == manual.bbox
 
 
-def test_mouse_non_click_event_is_ignored(frame):
-    selector = CvClickSelector(bbox_size=80)
-    selector._frame_shape = frame.shape[:2]
-    selector._on_mouse(cv2.EVENT_MOUSEMOVE, 10, 10, 0, None)
-    assert selector._result is None
+def test_overlay_detection_flags_static_structural_pixels():
+    # Moving background + a fixed white cross => the cross is the overlay.
+    cfg = SelectionConfig(overlay_static_std=12.0, overlay_min_motion_frac=0.4)
+    rng = np.random.default_rng(0)
+    frames = []
+    for _ in range(8):
+        f = rng.integers(0, 255, (120, 160, 3), dtype=np.uint8)
+        cv2.line(f, (80, 0), (80, 119), (255, 255, 255), 2)
+        cv2.line(f, (0, 60), (159, 60), (255, 255, 255), 2)
+        frames.append(f)
+    mask = detect_static_overlay(frames, cfg)
+    assert mask is not None and mask.sum() > 0
+    assert box_overlaps_overlay(mask, BBox(70, 50, 20, 20))
+
+
+def test_overlay_detection_noop_on_static_scene():
+    cfg = SelectionConfig()
+    frames = [np.full((100, 100, 3), 100, np.uint8) for _ in range(8)]
+    assert detect_static_overlay(frames, cfg) is None

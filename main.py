@@ -12,7 +12,7 @@ import sys
 # Add the src/ directory to the import path so that the package can be imported
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from tracker_system.app.cli import main  # noqa: E402  (import after sys.path setup)
+from tracker_system.cli import main  # noqa: E402  (import after sys.path setup)
 
 if __name__ == "__main__":
     raise SystemExit(main())

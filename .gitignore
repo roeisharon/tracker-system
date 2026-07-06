@@ -21,6 +21,8 @@ htmlcov/
 
 # Generated outputs
 *.log
+out_*.mp4
+dbg_*/
 
 # OS / editor
 .DS_Store
@@ -29,6 +31,9 @@ htmlcov/
 
 #guides
 guides/
+
+#benchmarks
+benchmarks/
 
 #big sample videos
 sample-video.mp4

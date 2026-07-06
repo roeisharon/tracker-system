@@ -1,0 +1,140 @@
+# Default configuration for the Real-Time Object Tracking & Re-acquisition System.
+#
+# These values are the built-in defaults. A user may pass an alternative YAML
+# file via `--config <path>`; any keys present there are validated and merged
+# over these defaults. Only the keys below are recognised — unknown keys are
+# rejected so typos surface early.
+
+video:
+  # Downscale factor applied to the working frame used for tracking. Results are
+  # rendered back onto the full-resolution frame. 1.0 = track at native size.
+  # Lower values (e.g. 0.5) trade a little accuracy for higher FPS at 1080p.
+  processing_scale: 1.0
+  # Open timeout (milliseconds) hint for network/URL sources.
+  url_open_timeout_ms: 10000
+
+selection:
+  # Side length (pixels) of the initial square bounding box drawn around the
+  # user-selected pixel on the first frame.
+  default_bbox_size: 80
+  # Burned-in overlay handling. Some footage composites a screen-fixed overlay on
+  # every frame (a drone HUD crosshair/guide-lines, a timestamp, a watermark).
+  # Selecting a target near it makes the Target Profile model the overlay, not the
+  # object. When enabled, frames are sampled across the clip, temporally-static
+  # structural pixels are detected, and — only if the selection box overlaps them —
+  # the overlay is inpainted out of the first-frame patch used to build the
+  # template/tracker. Strict no-op on clean/static footage and selections away from
+  # any overlay; never touches the tracking/re-acquisition path.
+  handle_overlay: true
+  overlay_sample_frames: 30       # frames sampled across the clip for detection
+  overlay_static_std: 12.0        # temporal std below which a pixel is "static"
+  # Only trust detection when a MAJORITY of the frame is dynamic (the camera is
+  # moving), so a static camera's real background can't masquerade as an overlay.
+  overlay_min_motion_frac: 0.55
+
+tracker:
+  # Default single-object tracker. One of: CSRT, KCF, MOSSE.
+  # CSRT chosen by measurement (Phase 4, see benchmarks/results/2026-07-04-*):
+  # tracks at ~59 FPS at 1080p (2x the 30 FPS target) AND is the most stable under
+  # the drone's scale change (fewest losses). KCF/MOSSE are faster but fixed-scale
+  # and less robust; their speed is not needed since CSRT already clears real-time.
+  type: CSRT
+
+motion:
+  # Global (camera) motion estimation — the ego-motion backbone. On this aerial
+  # footage the scene is ~rigid and dominated by camera pan + descent/zoom, so a
+  # world-fixed target (the hut) moves in the image only because the camera moves.
+  # Estimating that per-frame transform lets re-acquisition predict where the
+  # target actually went (disambiguating it from identical distractors) and lets
+  # appearance matching follow the target's scale as the drone descends. It is a
+  # strict no-op on clean/static footage (identity transform, low confidence).
+  enabled: true
+  flow_scale: 0.5           # downscale for optical flow (speed); estimate is full-res
+  max_features: 600         # goodFeaturesToTrack corner budget on the background
+  quality_level: 0.01       # corner quality threshold
+  min_distance: 8           # min spacing between corners (downscaled px)
+  min_features: 12          # min tracked points before attempting a fit
+  ransac_thresh: 3.0        # RANSAC reprojection threshold (downscaled px)
+  min_inliers: 10           # min inliers to trust the transform
+  min_inlier_ratio: 0.5     # min inlier fraction to trust the transform
+  mask_dilate_frac: 0.35    # dilate the target box by this frac when masking it out
+  # Accumulated scale drift (either direction) since the last structural-template
+  # capture that triggers a guarded refresh so template matching follows the zoom.
+  template_refresh_scale: 1.3
+
+loss:
+  # Consecutive "bad" frames required before LOST is declared. This hysteresis
+  # window is what prevents state chatter and single-frame false positives.
+  max_lost_frames: 8
+  # Max centre displacement per frame as a fraction of the frame diagonal; a
+  # larger jump (tracker teleporting to a distractor) is treated as a loss.
+  max_center_jump_frac: 0.25
+  # Max per-frame box area growth/shrink ratio before it looks like a failure.
+  # Kept well above the gentle scale change of the descending drone footage.
+  max_scale_ratio: 1.6
+  # Minimum fraction of the box that must remain inside the frame.
+  min_frame_overlap: 0.3
+  # Adaptive per-target identity validation. The detector learns the target's
+  # own similarity distribution during sustained genuine tracking and gates on a
+  # robust outlier bound: threshold = median - identity_k * robust_std. A stable
+  # target (tight distribution) gets a strict gate that catches a drift onto the
+  # background; a noisy target (wide distribution) gets a very low gate, so
+  # appearance becomes a weak signal and motion/spatial continuity carries
+  # identity. Samples are collected only during a sustained healthy track and
+  # persist across re-acquisitions (never re-seeded onto background).
+  similarity_ema_alpha: 0.3     # fast EMA smoothing of the similarity signal
+  identity_stable_frames: 8     # consecutive healthy frames before sampling
+  identity_window: 120          # rolling window of the distribution
+  identity_min_samples: 45      # samples before the adaptive gate activates
+  identity_k: 8.0               # robust-std multiplier (higher = more tolerant)
+  # Absolute safety floor (backstop for the degenerate near-zero case).
+  min_similarity: 0.15
+
+reacquire:
+  # Minimum weighted candidate score to accept a re-lock.
+  min_score: 0.45
+  # Appearance gate: min colour-histogram similarity for a candidate to qualify.
+  min_hist_score: 0.3
+  # Spatial/identity gate: min motion prior (proximity to the predicted
+  # position). Stops re-acquisition locking onto an identical look-alike
+  # elsewhere in the frame.
+  min_motion_score: 0.3
+  # Initial search radius around the motion-predicted position (frac of diagonal).
+  search_radius_frac: 0.15
+  # How much the search radius grows each frame the target stays lost.
+  search_expansion_frac: 0.03
+  # Cap on the search radius (fraction of the frame diagonal).
+  max_search_radius_frac: 0.75
+  # Hard cap on the search-region size per frame dimension, so it stays a
+  # locality and never covers the whole frame.
+  max_region_frac: 0.6
+  # Downscale factor for the (expensive) template matching only. SEARCHING was the
+  # FPS bottleneck at 1080p; matching a downscaled ROI/template is far cheaper and
+  # barely affects localisation. Candidate coords are reported back in full res.
+  # Chosen by measurement (Phase 4, benchmarks/results/2026-07-04-search-scale).
+  search_scale: 0.5
+  # Template scales tried during multi-scale matching (handles scale change).
+  scales: [0.8, 1.0, 1.25]
+  # Weighted scoring: spatial continuity (motion) is primary; appearance validates.
+  weight_template: 0.3
+  weight_histogram: 0.2
+  weight_motion: 0.5
+  # Locality of the motion prior (fraction of the frame diagonal).
+  motion_sigma_frac: 0.15
+  # Cap on how far the velocity is extrapolated when predicting position.
+  max_prediction_frames: 30
+  # Number of candidate peaks scored per scale.
+  max_candidates: 3
+  # Anti-thrash: a re-acquisition that collapses back to LOST within this many
+  # frames counts as failed; after max_failed_reacquires failures in a row,
+  # suspend re-acquisition for reacquire_cooldown_frames so the system settles
+  # into SEARCHING instead of flashing green onto unconfirmable background.
+  reacquire_probation_frames: 20
+  max_failed_reacquires: 3
+  reacquire_cooldown_frames: 90
+  # Gate re-acquisition on the target's OWN learned identity threshold (from loss
+  # detection), not just the fixed min_hist_score, so re-acquiring demands the same
+  # identity confidence as staying tracked. Stops the re-lock/lose thrash onto
+  # background (e.g. drone sand). Falls back to min_hist_score until a threshold is
+  # learned and for noisy targets whose learned gate is already lower.
+  use_identity_appearance_floor: true

@@ -12,7 +12,7 @@ from typing import List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .geometry import BBox
+from geometry import BBox
 
 COLOR_TRACKING = (0, 200, 0)
 COLOR_LOST = (0, 0, 255)

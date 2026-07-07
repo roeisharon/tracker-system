@@ -6,9 +6,9 @@ import cv2
 import numpy as np
 import pytest
 
-from tracker_system.config import SelectionConfig
-from tracker_system.geometry import BBox
-from tracker_system.selection import (
+from config import SelectionConfig
+from geometry import BBox
+from selection import (
     CvClickSelector, ManualPixelSelector, SelectionError,
     box_overlaps_overlay, detect_static_overlay,
 )

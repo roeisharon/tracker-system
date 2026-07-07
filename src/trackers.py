@@ -22,8 +22,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .config import REPO_ROOT, TrackerConfig
-from .geometry import BBox, bbox_from_center_wh, clamp_bbox
+from config import REPO_ROOT, TrackerConfig
+from geometry import BBox, bbox_from_center_wh, clamp_bbox
 
 # CSRT constructor may live under cv2 or cv2.legacy depending on the build.
 _CSRT_PATHS = ("TrackerCSRT_create", "legacy.TrackerCSRT_create")

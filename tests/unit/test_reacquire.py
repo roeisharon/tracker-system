@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from tracker_system.appearance import AppearanceMemory, Verifier
-from tracker_system.config import ReacquireConfig, VerifierConfig
-from tracker_system.geometry import BBox
-from tracker_system.reacquire import Reacquirer
+from appearance import AppearanceMemory, Verifier
+from config import ReacquireConfig, VerifierConfig
+from geometry import BBox
+from reacquire import Reacquirer
 
 
 def _frame_with_texture_at(x, y, tex):

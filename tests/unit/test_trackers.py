@@ -6,9 +6,9 @@ import cv2
 import numpy as np
 import pytest
 
-from tracker_system.config import TrackerConfig
-from tracker_system.geometry import BBox
-from tracker_system.trackers import (
+from config import TrackerConfig
+from geometry import BBox
+from trackers import (
     FlowTracker, TrackerNotAvailableError, create_backend, probe_backends,
 )
 

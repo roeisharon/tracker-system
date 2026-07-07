@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from .config import LossConfig
-from .geometry import BBox, frame_overlap_ratio
+from config import LossConfig
+from geometry import BBox, frame_overlap_ratio
 
 REASON_LEFT_FRAME = "left frame"
 REASON_SCALE_CHANGE = "scale change"

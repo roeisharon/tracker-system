@@ -23,8 +23,8 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .config import VerifierConfig
-from .geometry import BBox, clamp_bbox
+from config import VerifierConfig
+from geometry import BBox, clamp_bbox
 
 _CANON = (64, 64)          # canonical size for scale-invariant NCC
 _HIST_BINS = [50, 60]
@@ -81,6 +81,9 @@ class AppearanceMemory:
         self._orb = cv2.ORB_create(nfeatures=cfg.orb_nfeatures, scaleFactor=1.2, nlevels=8)
         self.anchor: Optional[Template] = None
         self.recent: Optional[Template] = None
+        # Gallery of past-appearance snapshots (spans scale change) for re-acquire.
+        self.snapshots: List[Template] = []
+        self._snap_diag: Optional[float] = None
 
     def extract(self, frame: np.ndarray, bbox: BBox, hud_mask=None) -> Template:
         fh, fw = frame.shape[:2]
@@ -106,28 +109,57 @@ class AppearanceMemory:
         self.anchor = self.extract(frame, bbox, hud_mask)
         self.anchor.variants = _rot_variants(self.anchor.gray, self.cfg.rot_ncc_step)
         self.recent = self.anchor
+        self.snapshots = []
+        self._snap_diag = float(np.hypot(bbox.w, bbox.h))
 
     def update(self, frame, bbox: BBox, hud_mask, confidence: float, tracker_score: float = 0.0) -> None:
         """Refresh the recent template when the frame is confidently on-target.
 
         Gating on EITHER the fused confidence OR the raw tracker score breaks the
         deadlock (confidence needs a fresh template to stay high, but was the gate
-        for refreshing it).
+        for refreshing it). Also snapshots the current appearance into the gallery
+        on a significant scale change (for re-acquisition).
         """
         if confidence < self.cfg.ema_update_conf and tracker_score < self.cfg.tmpl_update_score:
             return
-        new = self.extract(frame, bbox, hud_mask)
+        fresh = self.extract(frame, bbox, hud_mask)
+        self._maybe_snapshot(fresh, bbox)
+        new = fresh
         if self.recent is not None and self.recent.gray.shape == new.gray.shape:
             blended = cv2.addWeighted(self.recent.gray, 1 - self.cfg.ema_alpha,
                                       new.gray, self.cfg.ema_alpha, 0)
             new = Template(blended, new.hist, new.keypoints, new.descriptors, new.size)
         self.recent = new
 
+    def _maybe_snapshot(self, tmpl: Template, bbox: BBox) -> None:
+        if self.cfg.max_snapshots <= 0:
+            return
+        diag = float(np.hypot(bbox.w, bbox.h))
+        if self._snap_diag is None:
+            self._snap_diag = diag
+            return
+        step = self.cfg.snapshot_scale_step
+        if diag / self._snap_diag >= step or diag / self._snap_diag <= 1.0 / step:
+            self.snapshots.append(tmpl)
+            if len(self.snapshots) > self.cfg.max_snapshots:
+                self.snapshots.pop(0)
+            self._snap_diag = diag
+
     def templates(self) -> List[Template]:
+        """Anchor + recent — the cheap per-frame set for loss detection."""
         out = []
         if self.anchor is not None:
             out.append(self.anchor)
         if self.recent is not None and self.recent is not self.anchor:
+            out.append(self.recent)
+        return out
+
+    def reacq_templates(self) -> List[Template]:
+        """Anchor + gallery snapshots + recent — the fuller set for re-acquisition,
+        so a target that changed appearance before loss is still proposed on return."""
+        out = self.templates()[:1]  # anchor
+        out.extend(self.snapshots)
+        if self.recent is not None and all(self.recent is not t for t in out):
             out.append(self.recent)
         return out
 
@@ -187,8 +219,8 @@ class Verifier:
         self._last_orb = 0.0
 
     def appearance_confidence(self, frame, bbox: BBox, hud_mask=None,
-                              force_orb: bool = False) -> Tuple[float, dict]:
-        templates = self.memory.templates()
+                              force_orb: bool = False, templates=None) -> Tuple[float, dict]:
+        templates = self.memory.templates() if templates is None else templates
         if not templates:
             return 0.0, {}
         query = self.memory.extract(frame, bbox, hud_mask)

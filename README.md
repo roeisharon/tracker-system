@@ -91,11 +91,11 @@ tracker-system/
   download_models.py         # fetch the ViT / NanoTrack ONNX models
   models/vittrack.onnx       # vendored ViT tracker weights
   benchmarks/drone.py        # hut + bush benchmark
-  src/tracker_system/
+  src/                       # flat module set (on the import path via main.py)
     cli.py                   # --info and track commands
     pipeline.py              # streaming loop + state machine + FPS meter
     trackers.py              # backends: hybrid (ViT+flow), vit, nano, csrt
-    appearance.py            # appearance memory + multi-cue verifier
+    appearance.py            # appearance memory (+ gallery) + multi-cue verifier
     motion.py                # global ego-motion estimator
     loss.py                  # fused-confidence loss detection
     reacquire.py             # appearance-confirmed re-acquisition

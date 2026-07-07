@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tracker_system.appearance import AppearanceMemory, Verifier, hist_similarity
-from tracker_system.config import VerifierConfig
-from tracker_system.geometry import BBox
+from appearance import AppearanceMemory, Verifier, hist_similarity
+from config import VerifierConfig
+from geometry import BBox
 
 
 def _frame_with_patch(seed=1):

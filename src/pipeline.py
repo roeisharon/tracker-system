@@ -21,16 +21,16 @@ from typing import Callable, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .appearance import AppearanceMemory, Verifier
-from .config import Settings
-from .geometry import BBox, clamp_bbox, resize_frame
-from .loss import LossDetector
-from .motion import GlobalMotionEstimator
-from .overlay import draw_debug_search, render_overlay
-from .reacquire import Reacquirer
-from .selection import TargetSelector, prepare_init
-from .trackers import create_backend
-from .video import VideoSource
+from appearance import AppearanceMemory, Verifier
+from config import Settings
+from geometry import BBox, clamp_bbox, resize_frame
+from loss import LossDetector
+from motion import GlobalMotionEstimator
+from overlay import draw_debug_search, render_overlay
+from reacquire import Reacquirer
+from selection import TargetSelector, prepare_init
+from trackers import create_backend
+from video import VideoSource
 
 ProgressCallback = Callable[[int, int], None]
 

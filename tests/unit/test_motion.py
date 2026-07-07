@@ -5,9 +5,9 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from tracker_system.config import MotionConfig
-from tracker_system.geometry import BBox
-from tracker_system.motion import GlobalMotionEstimator, Transform
+from config import MotionConfig
+from geometry import BBox
+from motion import GlobalMotionEstimator, Transform
 
 
 def _textured(seed=0):

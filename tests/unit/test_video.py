@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import pytest
 
-from tracker_system.video import VideoSource, VideoSourceError, is_url
+from video import VideoSource, VideoSourceError, is_url
 
 
 @pytest.fixture

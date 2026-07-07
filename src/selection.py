@@ -18,8 +18,8 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .config import SelectionConfig
-from .geometry import BBox, bbox_from_center, clamp_bbox
+from config import SelectionConfig
+from geometry import BBox, bbox_from_center, clamp_bbox
 
 _INPAINT_RADIUS = 3
 _INSTRUCTIONS = "Click the target  |  ESC to cancel"

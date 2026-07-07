@@ -18,11 +18,11 @@ try:
 except Exception:  # pragma: no cover - older/newer cv2 without this helper
     pass
 
-from .config import ConfigError, Settings
-from .pipeline import PipelineError, TrackingPipeline
-from .selection import CvClickSelector, ManualPixelSelector, SelectionError, TargetSelector
-from .trackers import TrackerNotAvailableError, probe_backends
-from .video import VideoSource, VideoSourceError
+from config import ConfigError, Settings
+from pipeline import PipelineError, TrackingPipeline
+from selection import CvClickSelector, ManualPixelSelector, SelectionError, TargetSelector
+from trackers import TrackerNotAvailableError, probe_backends
+from video import VideoSource, VideoSourceError
 
 PROG = "tracker-system"
 

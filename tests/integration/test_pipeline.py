@@ -13,11 +13,11 @@ import cv2
 import numpy as np
 import pytest
 
-from tracker_system.config import Settings
-from tracker_system.geometry import BBox, bbox_from_center
-from tracker_system.pipeline import TrackingPipeline
-from tracker_system.selection import ManualPixelSelector, SelectionResult, TargetSelector
-from tracker_system.video import VideoSource
+from config import Settings
+from geometry import BBox, bbox_from_center
+from pipeline import TrackingPipeline
+from selection import ManualPixelSelector, SelectionResult, TargetSelector
+from video import VideoSource
 
 WIDTH, HEIGHT, FPS, SQUARE = 320, 240, 20.0, 40
 

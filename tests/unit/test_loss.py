@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from tracker_system.config import LossConfig
-from tracker_system.geometry import BBox
-from tracker_system.loss import (
+from config import LossConfig
+from geometry import BBox
+from loss import (
     LossDetector, REASON_LEFT_FRAME, REASON_LOW_CONFIDENCE, REASON_SCALE_CHANGE,
 )
 

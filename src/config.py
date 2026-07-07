@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 
 from pathlib import Path
 
-# src/tracker_system/config.py -> parents[2] == repo root (for model paths).
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# src/config.py -> parents[1] == repo root (for model paths).
+REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_BACKENDS = ("hybrid", "vit", "nano", "csrt")
 
 
@@ -101,6 +101,13 @@ class VerifierConfig:
     ema_alpha: float = 0.3      # recent-template gray EMA rate
     ema_update_conf: float = 0.6   # fused-conf gate to refresh the recent template
     tmpl_update_score: float = 0.7  # OR raw tracker-score gate (breaks the deadlock)
+    # Multi-snapshot gallery: capture a template each time the box scale changes by
+    # ``snapshot_scale_step`` during confident tracking, keeping up to
+    # ``max_snapshots``. Re-acquisition searches the whole gallery, so a target that
+    # grew/changed a lot before loss is still *proposed* on return (not just the
+    # stale anchor + last recent). 0 snapshots disables the gallery.
+    max_snapshots: int = 4
+    snapshot_scale_step: float = 1.5
 
 
 @dataclass(frozen=True)
@@ -126,6 +133,11 @@ class ReacquireConfig:
     reacq_every: int = 1        # run the (downscaled) search every N lost frames
     reacq_downscale: float = 0.5
     reacq_scales: tuple = (0.5, 0.75, 1.0, 1.5, 2.0)
+    # Rotation sweep in the coarse search: every ``rot_every`` lost frames, also try
+    # the anchor rotated at ``rot_step`` degrees so a rotated returning target is
+    # localized (the upright search would miss it). 0 disables.
+    rot_step: int = 45
+    rot_every: int = 3
     # Anti-thrash: a re-acquire that collapses back within probation counts as
     # failed; after too many, cool down so we settle into LOST instead of flashing.
     reacquire_probation_frames: int = 20
@@ -183,6 +195,10 @@ class Settings:
             raise ConfigError("verifier.ema_alpha must be in (0, 1]")
         if ver.rot_ncc_step < 0 or (ver.rot_ncc_step and 360 % ver.rot_ncc_step):
             raise ConfigError("verifier.rot_ncc_step must be 0 or a divisor of 360")
+        if ver.max_snapshots < 0:
+            raise ConfigError("verifier.max_snapshots must be >= 0")
+        if ver.snapshot_scale_step <= 1.0:
+            raise ConfigError("verifier.snapshot_scale_step must be > 1.0")
 
         loss = self.loss
         if not -1.0 <= loss.t_lost <= 1.0:
@@ -201,6 +217,10 @@ class Settings:
             raise ConfigError("reacquire.t_reacq_ambiguous must be in [-1, 1]")
         if not 0.0 < rq.ambiguity_ratio <= 1.0:
             raise ConfigError("reacquire.ambiguity_ratio must be in (0, 1]")
+        if rq.rot_step < 0 or (rq.rot_step and 360 % rq.rot_step):
+            raise ConfigError("reacquire.rot_step must be 0 or a divisor of 360")
+        if rq.rot_every < 1:
+            raise ConfigError("reacquire.rot_every must be >= 1")
         if rq.reacq_every < 1:
             raise ConfigError("reacquire.reacq_every must be >= 1")
         if not 0.0 < rq.reacq_downscale <= 1.0:

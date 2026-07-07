@@ -20,8 +20,8 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from .config import MotionConfig
-from .geometry import BBox, resize_frame
+from config import MotionConfig
+from geometry import BBox, resize_frame
 
 
 class Transform:

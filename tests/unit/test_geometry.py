@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tracker_system.geometry import (
+from geometry import (
     BBox, bbox_from_center, bbox_from_center_wh, clamp_bbox, clamp_point,
     extract_patch, frame_overlap_ratio, resize_frame,
 )

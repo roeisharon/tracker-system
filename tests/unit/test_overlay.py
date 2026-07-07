@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from tracker_system.geometry import BBox
-from tracker_system.overlay import draw_debug_search, render_overlay, state_color
+from geometry import BBox
+from overlay import draw_debug_search, render_overlay, state_color
 
 
 def test_state_color_known_and_default():

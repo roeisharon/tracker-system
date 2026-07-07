@@ -2,7 +2,7 @@
 
 Coarse multi-scale template match over a downscaled full frame proposes the best
 location; it is then confirmed at full resolution by the appearance
-:class:`~tracker_system.appearance.Verifier` (including ORB/RANSAC) and accepted
+:class:`~appearance.Verifier` (including ORB/RANSAC) and accepted
 only above ``t_reacq`` (stricter than the tracking gate). This is deliberately
 appearance-first — unlike the old motion-prior-dominated matcher it will not snap
 onto whatever blob sits nearest the predicted point.
@@ -15,9 +15,9 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .appearance import AppearanceMemory, Verifier
-from .config import ReacquireConfig
-from .geometry import BBox, clamp_bbox
+from appearance import AppearanceMemory, Verifier, _rotate
+from config import ReacquireConfig
+from geometry import BBox, clamp_bbox
 
 
 def _is_ambiguous(res: np.ndarray, loc, tw: int, th: int, ratio: float) -> bool:
@@ -41,6 +41,7 @@ class Reacquirer:
         self.cfg = cfg
         self.memory = memory
         self.verifier = verifier
+        self._calls = 0
         # Diagnostics for the debug overlay.
         self.last_candidates: List[Tuple[BBox, float]] = []
         self.last_accepted: Optional[BBox] = None
@@ -52,30 +53,37 @@ class Reacquirer:
         self.last_candidates = []
         self.last_accepted = None
         self.last_predicted = (int(predicted_center[0]), int(predicted_center[1])) if predicted_center else None
-        templates = self.memory.templates()
+        self._calls += 1
+        # The gallery (anchor + scale snapshots + recent) so a target that changed
+        # appearance before loss is still proposed on return.
+        templates = self.memory.reacq_templates()
         if not templates:
             return None
 
         H, W = frame.shape[:2]
         ds = self.cfg.reacq_downscale
         small_gray = cv2.cvtColor(cv2.resize(frame, (int(W * ds), int(H * ds))), cv2.COLOR_BGR2GRAY)
+        # Throttled rotation sweep: try the anchor rotated so a rotated returning
+        # target is localized (the upright search would miss it).
+        sweep = self.cfg.rot_step > 0 and (self._calls % self.cfg.rot_every == 0)
 
         best = None  # (match_value, box, response_map, loc, sw, sh)
-        # Search with every remembered template (recent first for the current
-        # scale, anchor as the drift-free fallback).
-        for tmpl in reversed(templates):
+        for i, tmpl in enumerate(templates):
             tw, th = tmpl.size
+            angles = range(0, 360, self.cfg.rot_step) if (sweep and i == 0) else (0,)
             for s in self.cfg.reacq_scales:
                 sw, sh = max(8, int(tw * s * ds)), max(8, int(th * s * ds))
                 if sw >= small_gray.shape[1] or sh >= small_gray.shape[0]:
                     continue
-                res = cv2.matchTemplate(small_gray, cv2.resize(tmpl.gray, (sw, sh)),
-                                        cv2.TM_CCOEFF_NORMED)
-                _, maxv, _, maxloc = cv2.minMaxLoc(res)
-                box = clamp_bbox(BBox(maxloc[0] / ds, maxloc[1] / ds, sw / ds, sh / ds), W, H)
-                self.last_candidates.append((box, float(maxv)))
-                if best is None or maxv > best[0]:
-                    best = (maxv, box, res, maxloc, sw, sh)
+                base = cv2.resize(tmpl.gray, (sw, sh))
+                for ang in angles:
+                    g = base if ang == 0 else _rotate(base, ang)
+                    res = cv2.matchTemplate(small_gray, g, cv2.TM_CCOEFF_NORMED)
+                    _, maxv, _, maxloc = cv2.minMaxLoc(res)
+                    box = clamp_bbox(BBox(maxloc[0] / ds, maxloc[1] / ds, sw / ds, sh / ds), W, H)
+                    self.last_candidates.append((box, float(maxv)))
+                    if best is None or maxv > best[0]:
+                        best = (maxv, box, res, maxloc, sw, sh)
 
         if best is None:
             return None
@@ -88,7 +96,8 @@ class Reacquirer:
         # repetitive scene), so demand a higher confidence before re-locking.
         ambiguous = _is_ambiguous(best[2], best[3], best[4], best[5], self.cfg.ambiguity_ratio)
         bar = self.cfg.t_reacq_ambiguous if ambiguous else self.cfg.t_reacq
-        conf, _ = self.verifier.appearance_confidence(frame, cand, hud_mask, force_orb=True)
+        conf, _ = self.verifier.appearance_confidence(frame, cand, hud_mask,
+                                                      force_orb=True, templates=templates)
         if conf >= bar:
             self.last_accepted = cand
             return cand, conf

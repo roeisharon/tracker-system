@@ -21,7 +21,6 @@ htmlcov/
 
 # Generated outputs
 *.log
-out_*.mp4
 dbg_*/
 
 # OS / editor
@@ -35,5 +34,5 @@ guides/
 #benchmarks
 benchmarks/
 
-#big sample videos
-sample-video.mp4
+#tests
+tests/

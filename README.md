@@ -70,11 +70,12 @@ timeline, and average/min/max processing FPS.
 
 ## Configuration
 
-Defaults live in [`configs/default.yaml`](configs/default.yaml) and are validated
-on load (unknown keys / out-of-range values are rejected). Sections: `video`,
-`selection` (incl. HUD-overlay handling), `tracker` (backend + flow-scale),
-`motion` (ego-motion), `verifier` (cue weights + memory update gates), `loss`
-(fused-confidence hysteresis), `reacquire` (appearance-confirmed search).
+All tunables live in [`src/tracker_system/config.py`](src/tracker_system/config.py)
+as dataclass defaults — the single source of truth, validated on construction
+(out-of-range values raise `ConfigError`). Sections: `video`, `selection` (incl.
+HUD-overlay handling), `tracker` (backend + flow-scale), `motion` (ego-motion),
+`verifier` (cue weights + memory update gates), `loss` (fused-confidence
+hysteresis), `reacquire` (appearance-confirmed search). Edit the file to tune.
 
 ## Tests
 
@@ -88,7 +89,6 @@ pytest
 tracker-system/
   main.py                    # entry point -> package CLI
   download_models.py         # fetch the ViT / NanoTrack ONNX models
-  configs/default.yaml       # validated default configuration
   models/vittrack.onnx       # vendored ViT tracker weights
   benchmarks/drone.py        # hut + bush benchmark
   src/tracker_system/

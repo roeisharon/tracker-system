@@ -1,22 +1,18 @@
-"""Typed, validated configuration loaded from YAML.
+"""Typed, validated configuration.
 
-Built-in dataclass defaults are always present; an optional YAML file
-(``configs/default.yaml`` or a ``--config`` path) is merged on top. Unknown keys
-and out-of-range values raise :class:`ConfigError` so misconfiguration surfaces
-immediately.
+All tunables live here as dataclass defaults — the single source of truth (no
+external config file). Every :class:`Settings` is validated on construction;
+out-of-range values raise :class:`ConfigError`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
+
 from pathlib import Path
-from typing import Any, Mapping
 
-import yaml
-
-# src/tracker_system/config.py -> parents[2] == repo root.
+# src/tracker_system/config.py -> parents[2] == repo root (for model paths).
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = REPO_ROOT / "configs" / "default.yaml"
 ALLOWED_BACKENDS = ("hybrid", "vit", "nano", "csrt")
 
 
@@ -135,28 +131,8 @@ class Settings:
     loss: LossConfig = field(default_factory=LossConfig)
     reacquire: ReacquireConfig = field(default_factory=ReacquireConfig)
 
-    @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> "Settings":
-        if not isinstance(data, Mapping):
-            raise ConfigError("Configuration root must be a mapping")
-        known = {f.name for f in fields(cls)}
-        unknown = set(data) - known
-        if unknown:
-            raise ConfigError(
-                f"Unknown configuration section(s): {sorted(unknown)}. "
-                f"Known sections: {sorted(known)}"
-            )
-        settings = cls(
-            video=_build_section(VideoConfig, data, "video"),
-            selection=_build_section(SelectionConfig, data, "selection"),
-            tracker=_build_section(TrackerConfig, data, "tracker"),
-            motion=_build_section(MotionConfig, data, "motion"),
-            verifier=_build_section(VerifierConfig, data, "verifier"),
-            loss=_build_section(LossConfig, data, "loss"),
-            reacquire=_build_section(ReacquireConfig, data, "reacquire"),
-        )
-        settings.validate()
-        return settings
+    def __post_init__(self) -> None:
+        self.validate()
 
     def validate(self) -> None:
         if not 0.0 < self.video.processing_scale <= 1.0:
@@ -215,38 +191,3 @@ class Settings:
             raise ConfigError("reacquire.reacq_scales must be positive and non-empty")
         if rq.max_failed_reacquires < 1:
             raise ConfigError("reacquire.max_failed_reacquires must be >= 1")
-
-
-def _build_section(section_cls: type, data: Mapping[str, Any], name: str) -> Any:
-    raw = data.get(name, {}) or {}
-    if not isinstance(raw, Mapping):
-        raise ConfigError(f"Configuration section {name!r} must be a mapping")
-    valid = {f.name for f in fields(section_cls)}
-    unknown = set(raw) - valid
-    if unknown:
-        raise ConfigError(
-            f"Unknown key(s) in section {name!r}: {sorted(unknown)}. Valid: {sorted(valid)}"
-        )
-    # Tuples arrive from YAML as lists; coerce so dataclass types stay consistent.
-    coerced = {k: (tuple(v) if isinstance(v, list) else v) for k, v in raw.items()}
-    return section_cls(**coerced)
-
-
-def load_settings(path: str | Path | None = None) -> Settings:
-    """Load settings from YAML, falling back to built-in defaults."""
-    explicit = path is not None
-    source_path = Path(path) if explicit else DEFAULT_CONFIG_PATH
-    if not source_path.exists():
-        if explicit:
-            raise ConfigError(f"Config file not found: {source_path}")
-        return Settings.from_mapping({})
-    try:
-        with open(source_path, "r", encoding="utf-8") as handle:
-            loaded = yaml.safe_load(handle)
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"Failed to parse YAML config {source_path}: {exc}") from exc
-    if loaded is None:
-        loaded = {}
-    if not isinstance(loaded, Mapping):
-        raise ConfigError(f"Top-level YAML in {source_path} must be a mapping")
-    return Settings.from_mapping(loaded)

@@ -7,4 +7,3 @@
 # Pins are filled in from a verified clean install; see README for setup.
 opencv-contrib-python==5.0.0.93
 numpy==2.5.0
-PyYAML==6.0.3

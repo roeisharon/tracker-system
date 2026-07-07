@@ -23,7 +23,7 @@ WIDTH, HEIGHT, FPS, SQUARE = 320, 240, 20.0, 40
 
 
 def _settings(**loss_over):
-    s = Settings.from_mapping({})
+    s = Settings()
     if loss_over:
         s = replace(s, loss=replace(s.loss, **loss_over))
     return s

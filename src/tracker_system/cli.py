@@ -18,7 +18,7 @@ try:
 except Exception:  # pragma: no cover - older/newer cv2 without this helper
     pass
 
-from .config import ConfigError, Settings, load_settings
+from .config import ConfigError, Settings
 from .pipeline import PipelineError, TrackingPipeline
 from .selection import CvClickSelector, ManualPixelSelector, SelectionError, TargetSelector
 from .trackers import TrackerNotAvailableError, probe_backends
@@ -32,8 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROG, description="Real-Time Arbitrary Object Tracking & Re-acquisition System.")
     parser.add_argument("--info", metavar="SOURCE",
                         help="Print metadata + available backends for a video, then exit.")
-    parser.add_argument("--config", metavar="PATH", default=None,
-                        help="Optional YAML config (defaults to configs/default.yaml).")
 
     sub = parser.add_subparsers(dest="command")
     track = sub.add_parser("track", help="Track a selected target and write an annotated video.")
@@ -49,7 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
     track.add_argument("--show", action="store_true", help="Display the tracking window live.")
     track.add_argument("--debug-vis", metavar="DIR", default=None,
                        help="Save per-SEARCHING-frame candidate visualizations to DIR.")
-    track.add_argument("--config", metavar="PATH", default=argparse.SUPPRESS)
     return parser
 
 
@@ -132,7 +129,7 @@ def _run_track(parser, args, settings: Settings) -> int:
     print(f"  Output video:     {result.output_path}" if result.output_path
           else "  (no --out given; nothing written)")
     if result.avg_fps < 30.0:
-        print("  note: avg FPS < 30. Lower --scale in config to trade accuracy for speed.")
+        print("  note: avg FPS < 30. Lower video.processing_scale in config.py for speed.")
     return 0
 
 
@@ -140,7 +137,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        settings = load_settings(getattr(args, "config", None))
+        settings = Settings()
     except ConfigError as exc:
         parser.error(str(exc))
     if args.info:

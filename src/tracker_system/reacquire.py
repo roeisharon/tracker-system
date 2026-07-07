@@ -20,6 +20,22 @@ from .config import ReacquireConfig
 from .geometry import BBox, clamp_bbox
 
 
+def _is_ambiguous(res: np.ndarray, loc, tw: int, th: int, ratio: float) -> bool:
+    """True when a second, non-overlapping peak rivals the best in ``res``.
+
+    In repetitive scenes (identical bushes, roof tiles) the winning peak carries
+    no identity — suppress a window around it and see if another peak reaches
+    ``ratio`` of the best.
+    """
+    best = float(res[loc[1], loc[0]])
+    if best <= 0:
+        return True
+    work = res.copy()
+    x0, y0 = max(0, loc[0] - tw), max(0, loc[1] - th)
+    work[y0:loc[1] + th + 1, x0:loc[0] + tw + 1] = -1.0
+    return work.size > 0 and float(work.max()) >= ratio * best
+
+
 class Reacquirer:
     def __init__(self, cfg: ReacquireConfig, memory: AppearanceMemory, verifier: Verifier) -> None:
         self.cfg = cfg
@@ -44,7 +60,7 @@ class Reacquirer:
         ds = self.cfg.reacq_downscale
         small_gray = cv2.cvtColor(cv2.resize(frame, (int(W * ds), int(H * ds))), cv2.COLOR_BGR2GRAY)
 
-        best = None  # (match_value, full_res_box)
+        best = None  # (match_value, box, response_map, loc, sw, sh)
         # Search with every remembered template (recent first for the current
         # scale, anchor as the drift-free fallback).
         for tmpl in reversed(templates):
@@ -59,7 +75,7 @@ class Reacquirer:
                 box = clamp_bbox(BBox(maxloc[0] / ds, maxloc[1] / ds, sw / ds, sh / ds), W, H)
                 self.last_candidates.append((box, float(maxv)))
                 if best is None or maxv > best[0]:
-                    best = (maxv, box)
+                    best = (maxv, box, res, maxloc, sw, sh)
 
         if best is None:
             return None
@@ -68,8 +84,12 @@ class Reacquirer:
             cx, cy = (int(v) for v in cand.center)
             if 0 <= cy < H and 0 <= cx < W and hud_mask[cy, cx] > 0:
                 return None
+        # Ambiguity: a rival peak means the location carries little identity (a
+        # repetitive scene), so demand a higher confidence before re-locking.
+        ambiguous = _is_ambiguous(best[2], best[3], best[4], best[5], self.cfg.ambiguity_ratio)
+        bar = self.cfg.t_reacq_ambiguous if ambiguous else self.cfg.t_reacq
         conf, _ = self.verifier.appearance_confidence(frame, cand, hud_mask, force_orb=True)
-        if conf >= self.cfg.t_reacq:
+        if conf >= bar:
             self.last_accepted = cand
             return cand, conf
         return None

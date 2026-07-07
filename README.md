@@ -50,10 +50,10 @@ python download_models.py            # fetch the ViT ONNX (~0.7 MB) if not vendo
 python main.py --info sample-video.mp4
 
 # track a pixel [i, j] = row,col and write an annotated video
-python main.py track sample-video.mp4 --pixel 545,960 --out out.mp4
+python main.py track sample-video.mp4 --pixel 545,960 --save out.mp4
 
 # or click the target on the first frame
-python main.py track sample-video.mp4 --select --out out.mp4
+python main.py track sample-video.mp4 --select --save out.mp4
 ```
 
 Useful flags: `--backend hybrid|vit|nano|csrt` (override the default),

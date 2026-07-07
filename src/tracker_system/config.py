@@ -57,8 +57,11 @@ class TrackerConfig:
     # Flow-scale estimator (drives box size under zoom).
     flow_max_features: int = 200
     flow_min_features: int = 8
-    flow_scale_min: float = 0.9        # per-frame scale clamp (lower)
-    flow_scale_max: float = 1.1        # per-frame scale clamp (upper)
+    # Per-frame scale clamp. Widened from 0.9/1.1 to give headroom for a fast
+    # approach / optical zoom on general footage; neutral on the drone's gradual
+    # zoom. (Looser bounds trade a little bad-fit robustness for that headroom.)
+    flow_scale_min: float = 0.8
+    flow_scale_max: float = 1.25
     flow_replenish_below: int = 40     # re-detect features when fewer remain
     flow_score_norm: float = 60.0      # inlier count that maps to score 1.0
     scale_cross_check: bool = True     # blend flow scale with ego global scale
@@ -91,6 +94,10 @@ class VerifierConfig:
     orb_every: int = 5          # run the (costly) ORB cue every N frames
     orb_nfeatures: int = 500
     max_patch: int = 256        # cap patch side for descriptors (bounds cost as the box grows)
+    # Rotation-tolerant identity: score the NCC cue against the anchor rotated at
+    # every ``rot_ncc_step`` degrees (0 disables). Lets a rotated view of the target
+    # (spinning camera / object) still match its own anchor — NCC is rotation-blind.
+    rot_ncc_step: int = 45
     ema_alpha: float = 0.3      # recent-template gray EMA rate
     ema_update_conf: float = 0.6   # fused-conf gate to refresh the recent template
     tmpl_update_score: float = 0.7  # OR raw tracker-score gate (breaks the deadlock)
@@ -111,6 +118,11 @@ class ReacquireConfig:
     """Appearance-confirmed re-acquisition while LOST."""
 
     t_reacq: float = 0.55       # stricter accept threshold than t_lost
+    # Ambiguity gate: if the winning match peak has a rival peak >= ambiguity_ratio
+    # of it (repetitive scene — identical bushes/roof tiles), the best peak carries
+    # little identity, so demand the higher ``t_reacq_ambiguous`` before re-locking.
+    ambiguity_ratio: float = 0.9
+    t_reacq_ambiguous: float = 0.75
     reacq_every: int = 1        # run the (downscaled) search every N lost frames
     reacq_downscale: float = 0.5
     reacq_scales: tuple = (0.5, 0.75, 1.0, 1.5, 2.0)
@@ -169,6 +181,8 @@ class Settings:
             raise ConfigError("verifier.orb_every must be >= 1")
         if not 0.0 < ver.ema_alpha <= 1.0:
             raise ConfigError("verifier.ema_alpha must be in (0, 1]")
+        if ver.rot_ncc_step < 0 or (ver.rot_ncc_step and 360 % ver.rot_ncc_step):
+            raise ConfigError("verifier.rot_ncc_step must be 0 or a divisor of 360")
 
         loss = self.loss
         if not -1.0 <= loss.t_lost <= 1.0:
@@ -183,6 +197,10 @@ class Settings:
         rq = self.reacquire
         if not -1.0 <= rq.t_reacq <= 1.0:
             raise ConfigError("reacquire.t_reacq must be in [-1, 1]")
+        if not -1.0 <= rq.t_reacq_ambiguous <= 1.0:
+            raise ConfigError("reacquire.t_reacq_ambiguous must be in [-1, 1]")
+        if not 0.0 < rq.ambiguity_ratio <= 1.0:
+            raise ConfigError("reacquire.ambiguity_ratio must be in (0, 1]")
         if rq.reacq_every < 1:
             raise ConfigError("reacquire.reacq_every must be >= 1")
         if not 0.0 < rq.reacq_downscale <= 1.0:

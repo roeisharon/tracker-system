@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     group = track.add_mutually_exclusive_group(required=True)
     group.add_argument("--pixel", metavar="I,J", help="Target pixel as row,col ([i, j]).")
     group.add_argument("--select", action="store_true", help="Click the target on the first frame.")
-    track.add_argument("--out", metavar="PATH", default=None, help="Annotated output video path.")
+    track.add_argument("--save", metavar="PATH", default=None, help="Annotated output video path.")
     track.add_argument("--backend", default=None,
                        help="Tracker backend: hybrid|vit|nano|csrt (overrides config).")
     track.add_argument("--bbox-size", type=int, default=None,
@@ -110,7 +110,7 @@ def _run_track(parser, args, settings: Settings) -> int:
     pipeline = TrackingPipeline(settings, backend=args.backend)
     source = VideoSource(args.source)
     try:
-        result = pipeline.run(source, selector, out_path=args.out, show=args.show,
+        result = pipeline.run(source, selector, out_path=args.save, show=args.show,
                               progress=_make_progress(), debug_dir=args.debug_vis)
     except (VideoSourceError, PipelineError, SelectionError, TrackerNotAvailableError) as exc:
         print(f"\nerror: {exc}")
@@ -127,7 +127,7 @@ def _run_track(parser, args, settings: Settings) -> int:
         for e in result.timeline:
             print(f"    frame {e.frame_index:>5}  {e.state.value:<11} {e.reason}")
     print(f"  Output video:     {result.output_path}" if result.output_path
-          else "  (no --out given; nothing written)")
+          else "  (no --save given; nothing written)")
     if result.avg_fps < 30.0:
         print("  note: avg FPS < 30. Lower video.processing_scale in config.py for speed.")
     return 0

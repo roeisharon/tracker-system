@@ -39,6 +39,22 @@ class Template:
     keypoints: tuple
     descriptors: Optional[np.ndarray]
     size: Tuple[int, int]
+    # Canonical-size copies of ``gray`` rotated at every step (anchor only) — makes
+    # the NCC identity cue rotation-tolerant. None = score gray directly.
+    variants: Optional[List[np.ndarray]] = None
+
+
+def _rotate(gray: np.ndarray, angle: float) -> np.ndarray:
+    h, w = gray.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
+    return cv2.warpAffine(gray, m, (w, h), borderMode=cv2.BORDER_REPLICATE)
+
+
+def _rot_variants(gray: np.ndarray, step: int) -> Optional[List[np.ndarray]]:
+    if step <= 0 or gray.size == 0:
+        return None
+    base = cv2.resize(gray, _CANON)
+    return [_rotate(base, a) for a in range(0, 360, step)]
 
 
 def orb_matcher() -> cv2.BFMatcher:
@@ -88,6 +104,7 @@ class AppearanceMemory:
 
     def initialise(self, frame, bbox: BBox, hud_mask=None) -> None:
         self.anchor = self.extract(frame, bbox, hud_mask)
+        self.anchor.variants = _rot_variants(self.anchor.gray, self.cfg.rot_ncc_step)
         self.recent = self.anchor
 
     def update(self, frame, bbox: BBox, hud_mask, confidence: float, tracker_score: float = 0.0) -> None:
@@ -123,6 +140,25 @@ def _ncc(a_gray: np.ndarray, b_gray: np.ndarray) -> float:
     return float(max(0.0, cv2.matchTemplate(a, b, cv2.TM_CCOEFF_NORMED)[0, 0]))
 
 
+# Upright-NCC above this is already a good match -> skip the rotation sweep (keeps
+# the common upright case at one NCC; only rotated/poor matches pay for the sweep).
+_ROT_SKIP = 0.55
+
+
+def _ncc_template(query_gray: np.ndarray, tmpl: Template) -> float:
+    """NCC of a query patch against a template; rotation-tolerant if the template
+    carries rotated variants (the anchor). The rotation sweep is lazy — only run
+    when the upright match is weak."""
+    if not tmpl.variants or query_gray.size == 0:
+        return _ncc(tmpl.gray, query_gray)
+    q = cv2.resize(query_gray, _CANON)
+    upright = float(cv2.matchTemplate(tmpl.variants[0], q, cv2.TM_CCOEFF_NORMED)[0, 0])
+    if upright >= _ROT_SKIP:
+        return max(0.0, upright)
+    return float(max(0.0, max(cv2.matchTemplate(v, q, cv2.TM_CCOEFF_NORMED)[0, 0]
+                              for v in tmpl.variants)))
+
+
 def _orb_inlier_ratio(query: Template, ref: Template, matcher) -> float:
     if query.descriptors is None or ref.descriptors is None:
         return 0.0
@@ -156,7 +192,7 @@ class Verifier:
         if not templates:
             return 0.0, {}
         query = self.memory.extract(frame, bbox, hud_mask)
-        s_ncc = max(_ncc(t.gray, query.gray) for t in templates)
+        s_ncc = max(_ncc_template(query.gray, t) for t in templates)
         s_hist = max(hist_similarity(query.hist, t.hist) for t in templates)
         run_orb = force_orb or (self._orb_counter % self.cfg.orb_every == 0)
         self._orb_counter += 1

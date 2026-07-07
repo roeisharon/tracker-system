@@ -130,6 +130,11 @@ class ReacquireConfig:
     # little identity, so demand the higher ``t_reacq_ambiguous`` before re-locking.
     ambiguity_ratio: float = 0.9
     t_reacq_ambiguous: float = 0.75
+    # Confirm the top-K spatially-distinct coarse candidates with the (costly) full
+    # identity verifier and accept the best that clears its bar — the coarse-best
+    # peak is not always the identity-best, so ranking by correlation alone can miss
+    # the true target when a look-alike edges it out in raw correlation.
+    confirm_topk: int = 5
     reacq_every: int = 1        # run the (downscaled) search every N lost frames
     reacq_downscale: float = 0.5
     reacq_scales: tuple = (0.5, 0.75, 1.0, 1.5, 2.0)
@@ -217,6 +222,8 @@ class Settings:
             raise ConfigError("reacquire.t_reacq_ambiguous must be in [-1, 1]")
         if not 0.0 < rq.ambiguity_ratio <= 1.0:
             raise ConfigError("reacquire.ambiguity_ratio must be in (0, 1]")
+        if rq.confirm_topk < 1:
+            raise ConfigError("reacquire.confirm_topk must be >= 1")
         if rq.rot_step < 0 or (rq.rot_step and 360 % rq.rot_step):
             raise ConfigError("reacquire.rot_step must be 0 or a divisor of 360")
         if rq.rot_every < 1:

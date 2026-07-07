@@ -41,3 +41,23 @@ def test_reacquire_rejects_when_absent():
     reacq = Reacquirer(ReacquireConfig(t_reacq=0.9, reacq_scales=(1.0,)), mem, ver)
     # A blank frame -> nothing clears the strict gate.
     assert reacq.search(np.full((300, 400, 3), 30, np.uint8)) is None
+
+
+def test_top_k_distinct_dedups_and_caps():
+    from config import ReacquireConfig
+    from appearance import AppearanceMemory, Verifier
+    cfg = ReacquireConfig(confirm_topk=3)
+    reac = Reacquirer(cfg, AppearanceMemory(VerifierConfig()), None)
+    # Two boxes at the same centre (different scale) + three distinct centres.
+    cands = [
+        (0.9, BBox(100, 100, 40, 40), None, None, 0, 0),   # centre (120,120)
+        (0.8, BBox(90, 90, 60, 60), None, None, 0, 0),      # centre (120,120) - dup
+        (0.7, BBox(300, 300, 40, 40), None, None, 0, 0),    # distinct
+        (0.6, BBox(10, 10, 40, 40), None, None, 0, 0),      # distinct
+        (0.5, BBox(200, 10, 40, 40), None, None, 0, 0),     # distinct (beyond K)
+    ]
+    picked = reac._top_k_distinct(cands)
+    centres = [c[1].center for c in picked]
+    assert len(picked) == 3                      # capped at K
+    assert (120.0, 120.0) in centres             # kept the higher-score of the dup pair
+    assert centres.count((120.0, 120.0)) == 1    # the duplicate centre was dropped

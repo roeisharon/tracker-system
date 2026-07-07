@@ -175,8 +175,8 @@ def prepare_init(source_path: str, first_frame: np.ndarray, bbox: BBox,
 
     Detects the overlay once. ``init_frame`` is the first frame with the overlay
     inpainted out *iff* the selection overlaps it (else unchanged). ``hud_mask``
-    (or ``None``) is returned for reuse during tracking so appearance/flow
-    matching can exclude the HUD pixels. Strict no-op on clean/static footage.
+    (or ``None``) is returned for reuse during tracking so appearance/flow matching
+    can exclude the HUD pixels. Strict no-op on clean/static footage.
     """
     if not config.handle_overlay:
         return first_frame, None

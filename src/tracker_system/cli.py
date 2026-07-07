@@ -11,6 +11,13 @@ from typing import Optional, Sequence, Tuple
 
 import cv2
 
+# TrackerVit on the OpenCV 5.0 DNN engine prints a harmless per-init
+# "setPreferableTarget ... new graph engine" warning (it runs on CPU regardless).
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:  # pragma: no cover - older/newer cv2 without this helper
+    pass
+
 from .config import ConfigError, Settings, load_settings
 from .pipeline import PipelineError, TrackingPipeline
 from .selection import CvClickSelector, ManualPixelSelector, SelectionError, TargetSelector

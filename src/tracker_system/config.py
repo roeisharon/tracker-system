@@ -58,6 +58,10 @@ class TrackerConfig:
     # Above this native ViT score, trust the ViT centre; below it, fall back to the
     # flow-tracked centre (the small/low-texture target the ViT can't lock early).
     vit_trust_score: float = 0.30
+    # While the ViT is unconfident, cap the per-frame flow-centre shift to this
+    # fraction of the frame diagonal so a bad RANSAC fit on low-texture desert
+    # can't lurch the box toward the edge before the ViT locks. Inert once trusted.
+    unconfident_shift_frac: float = 0.04
     # Flow-scale estimator (drives box size under zoom).
     flow_max_features: int = 200
     flow_min_features: int = 8

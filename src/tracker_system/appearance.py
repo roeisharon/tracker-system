@@ -69,6 +69,10 @@ class AppearanceMemory:
     def extract(self, frame: np.ndarray, bbox: BBox, hud_mask=None) -> Template:
         fh, fw = frame.shape[:2]
         x, y, w, h = clamp_bbox(bbox, fw, fh).as_int_xywh()
+        # A box that has drifted mostly off-frame clamps to a sliver; keep the
+        # patch at least a few px so the ORB/resize path can't assert-fail.
+        w, h = max(w, 4), max(h, 4)
+        x, y = min(x, fw - w), min(y, fh - h)
         patch = frame[y:y + h, x:x + w]
         sm = _sub_mask(hud_mask, x, y, w, h)
         # Cap the descriptor patch size so cost stays bounded once the box fills

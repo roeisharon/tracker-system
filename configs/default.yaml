@@ -24,6 +24,8 @@ tracker:
   nano_backbone: models/nanotrack_backbone.onnx
   nano_head: models/nanotrack_head.onnx
   min_box: 12.0
+  vit_trust_score: 0.30          # trust the ViT centre above this native score
+  unconfident_shift_frac: 0.04   # cap per-frame flow-centre shift while ViT unconfident
   # Flow-scale estimator (drives box size).
   flow_max_features: 200
   flow_min_features: 8

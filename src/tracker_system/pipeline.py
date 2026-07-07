@@ -161,6 +161,9 @@ class TrackingPipeline:
             debug: bool = False, debug_dir: Optional[str] = None) -> TrackingResult:
         st = self.settings
         scale = self.scale
+        # estimateAffinePartial2D's RANSAC is seeded from the global cv2 RNG; fix it
+        # so a run is reproducible (the source of intermittent early-hut losses).
+        cv2.setRNGSeed(0)
         if debug_dir is not None:
             import os
             os.makedirs(debug_dir, exist_ok=True)

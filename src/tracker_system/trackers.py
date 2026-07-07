@@ -261,29 +261,38 @@ class HybridTracker:
         H, W = frame.shape[:2]
         flow = self.flow.update(frame)              # (cx, cy, scale, score) or None
         found_v, dbox, vscore = self.deep.update(frame)
+        confident = found_v and vscore >= self.cfg.vit_trust_score
 
-        # Centre: trust the ViT when it is confident, else follow the flow cloud.
-        if found_v and vscore >= self.cfg.vit_trust_score:
+        # Centre: trust the ViT when it is confident, else follow the flow cloud —
+        # but while unconfident, cap the per-frame shift so a bad flow fit on
+        # low-texture desert can't run the box to the edge before the ViT locks.
+        if confident:
             self.cx, self.cy = dbox.center
         elif flow is not None:
-            self.cx, self.cy = flow[0], flow[1]
+            ncx, ncy = flow[0], flow[1]
+            cap = self.cfg.unconfident_shift_frac * float(np.hypot(W, H))
+            dist = float(np.hypot(ncx - self.cx, ncy - self.cy))
+            if dist > cap > 0:
+                f = cap / dist
+                ncx, ncy = self.cx + (ncx - self.cx) * f, self.cy + (ncy - self.cy) * f
+            self.cx, self.cy = ncx, ncy
 
         # Scale: local flow, damped by the global ego scale (both measure the zoom).
         s = flow[2] if flow is not None else 1.0
         if self.cfg.scale_cross_check and self._ego_conf > 0:
             s = float(np.sqrt(max(s, 1e-6) * max(self._ego_scale, 1e-6)))
-        cap = float(min(W, H))
-        self.w = float(np.clip(self.w * s, self.cfg.min_box, cap))
-        self.h = float(np.clip(self.h * s, self.cfg.min_box, cap))
+        cap_px = float(min(W, H))
+        self.w = float(np.clip(self.w * s, self.cfg.min_box, cap_px))
+        self.h = float(np.clip(self.h * s, self.cfg.min_box, cap_px))
 
         box = clamp_bbox(bbox_from_center_wh(self.cx, self.cy, self.w, self.h), W, H)
         self.flow.set_box(bbox_from_center_wh(self.cx, self.cy, self.w, self.h))
-        flow_score = flow[3] if flow is not None else 0.0
+
         # last_score is the ViT identity (gates template learning); the returned
         # presence score also credits flow (carries the target through the phase
         # where it is too small/low-texture for the ViT to lock).
         self.last_score = vscore
-        return True, box, max(vscore, flow_score)
+        return True, box, max(vscore, flow[3] if flow is not None else 0.0)
 
     @property
     def name(self) -> str:

@@ -123,11 +123,11 @@ window, then is deleted when you close it):
 ### Examples
 
 ```bash
-python main.py track video.mp4                            # interactive + live view + temp preview
-python main.py track video.mp4 --headless                 # no live window; still previews the result
-python main.py track video.mp4 --headless --save out.mp4  # no live window; keep out.mp4
-python main.py track video.mp4 --pixel 545,960            # scriptable: skip the selector
-python main.py --info video.mp4                           # print metadata + backend availability
+python main.py track sample-video.mp4                            # interactive + live view + temp preview
+python main.py track sample-video.mp4 --headless                 # no live window; still previews the result
+python main.py track sample-video.mp4 --headless --save out.mp4  # no live window; keep out.mp4
+python main.py track sample-video.mp4 --pixel 545,970            # scriptable: skip the selector
+python main.py --info sample-video.mp4                           # print metadata + backend availability
 ```
 
 ### Options
@@ -221,7 +221,7 @@ pipeline is validated end-to-end on generated clips.
 - Loosening the identity thresholds speeds recovery but risks false locks and drift, so
   the defaults favor precision over aggressive recovery.
 - The drone "hut" result isn't fully repeatable: one seed tracked it perfectly (100%
-  uptime), others fell short — early on it's a sub-resolution speck, so tiny seed
+  uptime), others fell short — early on it's a sub-resolution speck, so tiny selection
   changes diverge before re-acquisition can help. See examples folder for reference.
 
 ## Future work

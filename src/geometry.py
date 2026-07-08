@@ -6,10 +6,8 @@ to unit-test and reuse across selection, tracking, appearance, and overlay.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Tuple
-
 import cv2
 import numpy as np
 
@@ -60,6 +58,7 @@ def bbox_from_center_wh(cx: float, cy: float, w: float, h: float) -> BBox:
 
 
 def clamp_point(x: float, y: float, frame_w: int, frame_h: int) -> Tuple[int, int]:
+    """Round ``(x, y)`` and clamp it to a valid pixel inside the frame."""
     cx = min(max(int(round(x)), 0), max(frame_w - 1, 0))
     cy = min(max(int(round(y)), 0), max(frame_h - 1, 0))
     return (cx, cy)

@@ -1,56 +1,58 @@
 """Command-line entry point.
 
 - ``--info <path|url>``  print video metadata + available tracker backends.
-- ``track <path|url>``   select a target ([i, j] or click) and track it.
+- ``track <path|url>``   pick a target (interactive click or ``--pixel i,j``),
+  track it, and preview or save the annotated video.
 """
 
 from __future__ import annotations
-
 import argparse
 from typing import Optional, Sequence, Tuple
-
 import cv2
+from config import ConfigError, Settings
+from output import AnnotatedVideoOutput
+from pipeline import PipelineError, TrackingPipeline
+from selection import InteractiveClickSelector, ManualPixelSelector, SelectionError, TargetSelector
+from trackers import TrackerNotAvailableError, probe_backends
+from video import VideoSource, VideoSourceError
 
-# TrackerVit on the OpenCV 5.0 DNN engine prints a harmless per-init
-# "setPreferableTarget ... new graph engine" warning (it runs on CPU regardless).
+# Silence OpenCV's noisy per-init DNN logging.
 try:
     cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
 except Exception:  # pragma: no cover - older/newer cv2 without this helper
     pass
 
-from config import ConfigError, Settings
-from pipeline import PipelineError, TrackingPipeline
-from selection import CvClickSelector, ManualPixelSelector, SelectionError, TargetSelector
-from trackers import TrackerNotAvailableError, probe_backends
-from video import VideoSource, VideoSourceError
-
 PROG = "tracker-system"
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Define the CLI: the top-level ``--info`` flag and the ``track`` subcommand."""
     parser = argparse.ArgumentParser(
         prog=PROG, description="Real-Time Arbitrary Object Tracking & Re-acquisition System.")
     parser.add_argument("--info", metavar="SOURCE",
                         help="Print metadata + available backends for a video, then exit.")
 
     sub = parser.add_subparsers(dest="command")
-    track = sub.add_parser("track", help="Track a selected target and write an annotated video.")
+    track = sub.add_parser("track", help="Track a target and preview / save an annotated video.")
     track.add_argument("source", help="Local video file path or direct video URL.")
-    group = track.add_mutually_exclusive_group(required=True)
-    group.add_argument("--pixel", metavar="I,J", help="Target pixel as row,col ([i, j]).")
-    group.add_argument("--select", action="store_true", help="Click the target on the first frame.")
-    track.add_argument("--save", metavar="PATH", default=None, help="Annotated output video path.")
+    # Interactive selection is the default; --pixel bypasses it for scripted runs.
+    track.add_argument("--pixel", metavar="I,J",
+                       help="Target pixel as row,col ([i, j]); bypasses the interactive selector.")
+    track.add_argument("--save", metavar="PATH", default=None,
+                       help="Save the annotated video to PATH (else preview a temp file, then delete).")
     track.add_argument("--backend", default=None,
                        help="Tracker backend: hybrid|vit|nano|csrt (overrides config).")
-    track.add_argument("--bbox-size", type=int, default=None,
+    track.add_argument("--bbox", type=int, default=None,
                        help="Initial bounding-box side length in px (overrides config).")
-    track.add_argument("--show", action="store_true", help="Display the tracking window live.")
-    track.add_argument("--debug-vis", metavar="DIR", default=None,
+    track.add_argument("--headless", action="store_true",
+                       help="Run without displaying the live tracking window.")
+    track.add_argument("--debug", metavar="DIR", default=None,
                        help="Save per-SEARCHING-frame candidate visualizations to DIR.")
     return parser
 
 
 def _print_info(source: str, settings: Settings) -> int:
+    """Print a source's metadata and which tracker backends this build can run."""
     try:
         with VideoSource(source) as video:
             meta = video.metadata
@@ -76,6 +78,7 @@ def _print_info(source: str, settings: Settings) -> int:
 
 
 def _parse_pixel(text: str) -> Tuple[int, int]:
+    """Parse a ``"row,col"`` string into an ``(i, j)`` integer pair."""
     parts = text.split(",")
     if len(parts) != 2:
         raise ValueError("expected two comma-separated integers, e.g. 540,960")
@@ -83,7 +86,9 @@ def _parse_pixel(text: str) -> Tuple[int, int]:
 
 
 def _make_progress():
+    """Build a progress callback that reprints a percentage line every 30 frames."""
     def progress(done: int, total: int) -> None:
+        # ``\r`` rewrites the same terminal line; total <= 0 means length is unknown.
         if total > 0 and (done % 30 == 0 or done == total):
             print(f"\r  processed {done}/{total} frames ({100.0 * done / total:4.1f}%)", end="")
         elif total <= 0 and done % 30 == 0:
@@ -92,30 +97,40 @@ def _make_progress():
 
 
 def _run_track(parser, args, settings: Settings) -> int:
-    bbox_size = args.bbox_size if args.bbox_size is not None else settings.selection.default_bbox_size
+    """Run the ``track`` subcommand end to end and print the run summary."""
+    # Initial box size: --bbox if given, else the configured default.
+    sel_cfg = settings.selection
+    bbox_size = args.bbox if args.bbox is not None else sel_cfg.default_bbox_size
     if bbox_size <= 0:
-        parser.error("--bbox-size must be positive")
+        parser.error("--bbox must be positive")
 
+    # Choose how the target is picked: scripted --pixel, else the interactive UI.
     selector: TargetSelector
-    if args.select:
-        selector = CvClickSelector(bbox_size)
-    else:
+    if args.pixel is not None:
         try:
             row, col = _parse_pixel(args.pixel)
         except ValueError as exc:
             parser.error(str(exc))
         selector = ManualPixelSelector(row, col, bbox_size)
         print(f"Target pixel [i={row}, j={col}] -> (x={col}, y={row}), bbox {bbox_size}px")
+    else:
+        selector = InteractiveClickSelector(bbox_size, sel_cfg.min_bbox_size, sel_cfg.max_bbox_size)
+
+    show = not args.headless          # live window on unless --headless
+    debug_dir = args.debug
+    output = AnnotatedVideoOutput(save_path=args.save)  # decides save vs temp-preview
 
     pipeline = TrackingPipeline(settings, backend=args.backend)
     source = VideoSource(args.source)
     try:
-        result = pipeline.run(source, selector, out_path=args.save, show=args.show,
-                              progress=_make_progress(), debug_dir=args.debug_vis)
+        result = pipeline.run(source, selector, out_path=output.path, show=show,
+                              progress=_make_progress(), debug_dir=debug_dir)
     except (VideoSourceError, PipelineError, SelectionError, TrackerNotAvailableError) as exc:
+        output.cleanup()  # drop the temp file if the run failed before producing video
         print(f"\nerror: {exc}")
         return 1
 
+    # Report the run's statistics and state timeline.
     print("\nDone.")
     print(f"Frames processed: {result.frames_processed}")
     print(f"  Processing FPS:   avg {result.avg_fps:.1f} | min {result.min_fps:.1f} | max {result.max_fps:.1f}")
@@ -126,18 +141,21 @@ def _run_track(parser, args, settings: Settings) -> int:
         print("  Timeline:")
         for e in result.timeline:
             print(f"    frame {e.frame_index:>5}  {e.state.value:<11} {e.reason}")
-    print(f"  Output video:     {result.output_path}" if result.output_path
-          else "  (no --save given; nothing written)")
-    if result.avg_fps < 30.0:
-        print("  note: avg FPS < 30. Lower video.processing_scale in config.py for speed.")
+    if output.is_temporary:
+        print("  Output video:     (temporary preview — opening in your video player)")
+    else:
+        print(f"  Output video:     {result.output_path}")
+
+    output.finish(success=True)  # preview the temp result (if any), then clean up
     return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point: parse args, load config, dispatch to --info or track."""
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        settings = Settings()
+        settings = Settings()  # validated on construction; bad config aborts here
     except ConfigError as exc:
         parser.error(str(exc))
     if args.info:

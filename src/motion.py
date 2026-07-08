@@ -13,13 +13,10 @@ screen-fixed HUD features. Flow runs downscaled; the transform is full-res.
 """
 
 from __future__ import annotations
-
 import math
 from typing import Optional, Tuple
-
 import cv2
 import numpy as np
-
 from config import MotionConfig
 from geometry import BBox, resize_frame
 
@@ -39,19 +36,23 @@ class Transform:
 
     @classmethod
     def identity(cls) -> "Transform":
+        """A "no motion" transform (confidence 0), used on the first frame or on failure."""
         return cls(np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64), 0.0)
 
     @property
     def scale(self) -> float:
+        """The uniform zoom factor between the two frames (1.0 = no zoom)."""
         return float(math.hypot(self.matrix[0, 0], self.matrix[1, 0]))
 
     def apply_point(self, point: Tuple[float, float]) -> Tuple[float, float]:
+        """Map a point from the previous frame into the current frame."""
         x, y = point
         m = self.matrix
         return (float(m[0, 0] * x + m[0, 1] * y + m[0, 2]),
                 float(m[1, 0] * x + m[1, 1] * y + m[1, 2]))
 
     def apply_bbox(self, bbox: BBox) -> BBox:
+        """Move + rescale a box by the transform (centre mapped, size scaled)."""
         cx, cy = self.apply_point(bbox.center)
         s = self.scale
         w, h = bbox.w * s, bbox.h * s
@@ -63,9 +64,10 @@ class GlobalMotionEstimator:
 
     def __init__(self, config: MotionConfig) -> None:
         self.config = config
-        self._prev_gray: Optional[np.ndarray] = None
+        self._prev_gray: Optional[np.ndarray] = None  # previous frame, kept to diff against
 
     def reset(self) -> None:
+        """Forget the previous frame so the next call returns identity (a fresh start)."""
         self._prev_gray = None
 
     def update(self, frame: np.ndarray, target_bbox: Optional[BBox] = None) -> Transform:
@@ -83,7 +85,10 @@ class GlobalMotionEstimator:
         return transform
 
     def _estimate(self, prev_gray, gray, target_bbox, s) -> Transform:
+        """Estimate the prev->current camera transform; identity if it can't be trusted."""
         cfg = self.config
+
+        # 1) Detect background corners (target box masked out).
         mask = self._feature_mask(prev_gray.shape, target_bbox, s)
         prev_pts = cv2.goodFeaturesToTrack(
             prev_gray, maxCorners=cfg.max_features, qualityLevel=cfg.quality_level,
@@ -91,6 +96,8 @@ class GlobalMotionEstimator:
         )
         if prev_pts is None or len(prev_pts) < cfg.min_features:
             return Transform.identity()
+        
+        # 2) Track them into the current frame; keep only the ones LK matched.
         next_pts, status, _ = cv2.calcOpticalFlowPyrLK(prev_gray, gray, prev_pts, None)
         if next_pts is None or status is None:
             return Transform.identity()
@@ -99,15 +106,20 @@ class GlobalMotionEstimator:
         good_next = next_pts.reshape(-1, 2)[status]
         if len(good_prev) < cfg.min_features:
             return Transform.identity()
+        
+        # 3) Fit a similarity transform with RANSAC (rejects HUD / target outliers).
         matrix, inliers = cv2.estimateAffinePartial2D(
             good_prev, good_next, method=cv2.RANSAC, ransacReprojThreshold=cfg.ransac_thresh,
         )
         if matrix is None or inliers is None:
             return Transform.identity()
+        
+        # 4) Trust it only with enough inlier support.
         n_inliers = int(inliers.sum())
         ratio = n_inliers / len(good_prev)
         if n_inliers < cfg.min_inliers or ratio < cfg.min_inlier_ratio:
             return Transform.identity()
+        
         # Rotation/scale are scale-invariant; only the translation needs unscaling.
         matrix = matrix.astype(np.float64).copy()
         matrix[0, 2] /= s
@@ -115,10 +127,17 @@ class GlobalMotionEstimator:
         return Transform(matrix, float(ratio))
 
     def _feature_mask(self, shape, target_bbox, s) -> Optional[np.ndarray]:
+        """White everywhere except a (dilated) hole over the target box.
+
+        Feature detection only samples the white area, so the target's own motion
+        can't pollute the background/camera estimate. ``s`` scales box coords into
+        the downscaled flow image.
+        """
         if target_bbox is None:
             return None
         h, w = shape[:2]
         mask = np.full((h, w), 255, dtype=np.uint8)
+        # Pad the excluded region a bit beyond the box to catch its fringe features.
         pad_x = self.config.mask_dilate_frac * target_bbox.w
         pad_y = self.config.mask_dilate_frac * target_bbox.h
         x1 = max(0, int(round((target_bbox.x - pad_x) * s)))

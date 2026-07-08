@@ -22,7 +22,8 @@ tracker-system = "cli:main"
 [tool.setuptools]
 package-dir = {"" = "src"}
 py-modules = ["appearance", "cli", "config", "geometry", "loss", "motion",
-              "overlay", "pipeline", "reacquire", "selection", "trackers", "video"]
+              "output", "overlay", "pipeline", "reacquire", "selection",
+              "trackers", "video"]
 
 [tool.pytest.ini_options]
 # Make the src/ layout importable in tests without an editable install.

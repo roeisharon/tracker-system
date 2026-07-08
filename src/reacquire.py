@@ -37,6 +37,8 @@ def _is_ambiguous(res: np.ndarray, loc, tw: int, th: int, ratio: float) -> bool:
 
 
 class Reacquirer:
+    """Coarse multi-scale template search + full-identity confirm, run while LOST."""
+
     def __init__(self, cfg: ReacquireConfig, memory: AppearanceMemory, verifier: Verifier) -> None:
         self.cfg = cfg
         self.memory = memory
@@ -62,59 +64,48 @@ class Reacquirer:
 
         H, W = frame.shape[:2]
         ds = self.cfg.reacq_downscale
+        # Correlate on a downscaled gray frame — the coarse stage only needs a location.
         small_gray = cv2.cvtColor(cv2.resize(frame, (int(W * ds), int(H * ds))), cv2.COLOR_BGR2GRAY)
         # Throttled rotation sweep: try the anchor rotated so a rotated returning
         # target is localized (the upright search would miss it).
         sweep = self.cfg.rot_step > 0 and (self._calls % self.cfg.rot_every == 0)
 
-        cands = []  # (match_value, box, response_map, loc, sw, sh)
+        # Slide every (template, scale, angle) over the frame; keep the strongest peak.
+        best = None  # (match_value, box, response_map, loc, sw, sh) of the coarse-best peak
         for i, tmpl in enumerate(templates):
             tw, th = tmpl.size
             angles = range(0, 360, self.cfg.rot_step) if (sweep and i == 0) else (0,)
             for s in self.cfg.reacq_scales:
                 sw, sh = max(8, int(tw * s * ds)), max(8, int(th * s * ds))
                 if sw >= small_gray.shape[1] or sh >= small_gray.shape[0]:
-                    continue
+                    continue  # template bigger than the frame at this scale — can't match
                 base = cv2.resize(tmpl.gray, (sw, sh))
                 for ang in angles:
                     g = base if ang == 0 else _rotate(base, ang)
                     res = cv2.matchTemplate(small_gray, g, cv2.TM_CCOEFF_NORMED)
                     _, maxv, _, maxloc = cv2.minMaxLoc(res)
+                    # Map the peak back to full-res coordinates.
                     box = clamp_bbox(BBox(maxloc[0] / ds, maxloc[1] / ds, sw / ds, sh / ds), W, H)
                     self.last_candidates.append((box, float(maxv)))
-                    cands.append((float(maxv), box, res, maxloc, sw, sh))
+                    if best is None or maxv > best[0]:
+                        best = (float(maxv), box, res, maxloc, sw, sh)
 
-        # Confirm the top-K spatially-distinct coarse candidates with the full
-        # identity verifier and take the best that clears its bar — the coarse-best
-        # peak is not always the identity-best.
-        best_acc = None  # (box, conf)
-        for maxv, box, res, loc, sw, sh in self._top_k_distinct(cands):
-            if hud_mask is not None:  # reject a centre sitting on the HUD overlay
-                cx, cy = (int(v) for v in box.center)
-                if 0 <= cy < H and 0 <= cx < W and hud_mask[cy, cx] > 0:
-                    continue
-            # Ambiguity: a rival peak means the location carries little identity, so
-            # demand a higher confidence before re-locking.
-            ambiguous = _is_ambiguous(res, loc, sw, sh, self.cfg.ambiguity_ratio)
-            bar = self.cfg.t_reacq_ambiguous if ambiguous else self.cfg.t_reacq
-            conf, _ = self.verifier.appearance_confidence(frame, box, hud_mask,
-                                                          force_orb=True, templates=templates)
-            if conf >= bar and (best_acc is None or conf > best_acc[1]):
-                best_acc = (box, conf)
-        if best_acc is not None:
-            self.last_accepted = best_acc[0]
-            return best_acc
+        if best is None:
+            return None
+
+        # Confirm the single best coarse peak with the full identity verifier.
+        _, box, res, loc, sw, sh = best
+        if hud_mask is not None:  # reject a centre sitting on the HUD overlay
+            cx, cy = (int(v) for v in box.center)
+            if 0 <= cy < H and 0 <= cx < W and hud_mask[cy, cx] > 0:
+                return None
+        # Ambiguity: a rival peak means the location carries little identity, so
+        # demand a higher confidence before re-locking.
+        ambiguous = _is_ambiguous(res, loc, sw, sh, self.cfg.ambiguity_ratio)
+        bar = self.cfg.t_reacq_ambiguous if ambiguous else self.cfg.t_reacq
+        conf, _ = self.verifier.appearance_confidence(frame, box, hud_mask,
+                                                      force_orb=True, templates=templates)
+        if conf >= bar:
+            self.last_accepted = box
+            return box, conf
         return None
-
-    def _top_k_distinct(self, cands):
-        """Highest-correlation candidates, keeping only spatially-distinct ones (so
-        the K slots aren't all the same peak at different scales)."""
-        picked = []
-        for c in sorted(cands, key=lambda c: -c[0]):
-            box = c[1]
-            if all(abs(box.center[0] - p[1].center[0]) + abs(box.center[1] - p[1].center[1])
-                   > 0.5 * max(box.w, box.h) for p in picked):
-                picked.append(c)
-            if len(picked) >= self.cfg.confirm_topk:
-                break
-        return picked

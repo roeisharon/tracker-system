@@ -6,12 +6,9 @@ in place on the frame written to the output video or shown on screen.
 """
 
 from __future__ import annotations
-
 from typing import List, Optional, Sequence, Tuple
-
 import cv2
 import numpy as np
-
 from geometry import BBox
 
 COLOR_TRACKING = (0, 200, 0)
@@ -33,37 +30,45 @@ _STATE_COLORS = {
 
 
 def state_color(state: str) -> Tuple[int, int, int]:
+    """Box colour for a state name (green tracking / orange searching / red lost)."""
     return _STATE_COLORS.get(state, COLOR_LOST)
 
 
 def draw_bbox(frame, bbox: BBox, color, thickness: int = 2) -> None:
+    """Draw the target's bounding box."""
     x, y, w, h = bbox.as_int_xywh()
     cv2.rectangle(frame, (x, y), (x + w, y + h), color, thickness)
 
 
 def draw_trajectory(frame, points: Sequence[Tuple[int, int]], color=COLOR_TRAIL,
                     max_points: int = _MAX_TRAIL_POINTS) -> None:
+    """Draw the recent centre trail as a connected line (last ``max_points`` only)."""
     pts = list(points)[-max_points:]
     for i in range(1, len(pts)):
         cv2.line(frame, pts[i - 1], pts[i], color, 2, cv2.LINE_AA)
 
 
 def draw_seed(frame, point: Tuple[int, int], color=COLOR_SEED) -> None:
+    """Mark the original click/seed point with a cross."""
     cv2.drawMarker(frame, point, color, cv2.MARKER_CROSS, 18, 2)
 
 
 def draw_search_region(frame, bbox: BBox, color=COLOR_SEARCHING) -> None:
+    """Outline the area being searched while LOST (thin box)."""
     x, y, w, h = bbox.as_int_xywh()
     cv2.rectangle(frame, (x, y), (x + w, y + h), color, 1, cv2.LINE_AA)
 
 
 def draw_hud(frame, lines: List[str], origin: Tuple[int, int] = (10, 10)) -> None:
+    """Draw the text status panel (state / tracker / FPS / ...) in the top-left."""
     if not lines:
         return
+    # Size the panel to fit the widest line, then position each line inside it.
     pad, line_h, scale, thick = 6, 22, 0.6, 1
     text_w = max(cv2.getTextSize(l, _FONT, scale, thick)[0][0] for l in lines)
     box_w, box_h = text_w + 2 * pad, line_h * len(lines) + 2 * pad
     x0, y0 = origin
+    # Blend a filled black rectangle in for a translucent panel behind the text.
     ov = frame.copy()
     cv2.rectangle(ov, (x0, y0), (x0 + box_w, y0 + box_h), (0, 0, 0), -1)
     cv2.addWeighted(ov, 0.45, frame, 0.55, 0, frame)
@@ -78,6 +83,7 @@ def render_overlay(frame, bbox: BBox, trajectory, state: str, fps: float,
                    reason: Optional[str] = None,
                    search_region: Optional[BBox] = None) -> np.ndarray:
     """Compose the full overlay in place and return the frame."""
+    # Draw back-to-front: search region, trail, box, seed, then the HUD on top.
     color = state_color(state)
     if search_region is not None:
         draw_search_region(frame, search_region)
@@ -102,12 +108,13 @@ def draw_debug_search(frame, search_region: Optional[BBox], candidates, accepted
         draw_search_region(frame, search_region)
     if predicted_center is not None:
         cv2.drawMarker(frame, predicted_center, (0, 0, 255), cv2.MARKER_TILTED_CROSS, 14, 2)
+    # Every candidate the coarse search considered, tagged with its match score.
     for box, score in candidates:
         x, y, w, h = box.as_int_xywh()
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 1)
         cv2.putText(frame, f"{score:.2f}", (x, max(10, y - 3)), _FONT, 0.35,
                     (0, 255, 255), 1, cv2.LINE_AA)
+    # The one that passed the identity check (if any), in the tracking colour.
     if accepted is not None:
-        x, y, w, h = accepted.as_int_xywh()
-        cv2.rectangle(frame, (x, y), (x + w, y + h), COLOR_TRACKING, 2)
+        draw_bbox(frame, accepted, COLOR_TRACKING, 2)
     return frame

@@ -11,19 +11,15 @@ runs only while SEARCHING.
 """
 
 from __future__ import annotations
-
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from time import perf_counter
 from typing import Callable, Dict, List, Optional, Tuple
-
 import cv2
-import numpy as np
-
 from appearance import AppearanceMemory, Verifier
 from config import Settings
-from geometry import BBox, clamp_bbox, resize_frame
+from geometry import clamp_bbox, resize_frame
 from loss import LossDetector
 from motion import GlobalMotionEstimator
 from overlay import draw_debug_search, render_overlay
@@ -39,17 +35,20 @@ class PipelineError(RuntimeError):
     """Raised when the pipeline cannot run (empty video, bad output path, ...)."""
 
 
-# -- state machine ----------------------------------------------------------
+# State machine: the states, the legal transitions between them, and the timeline.
 
 class TrackerState(Enum):
-    INIT = "INIT"
-    READY = "READY"
-    TRACKING = "TRACKING"
-    LOST = "LOST"
-    SEARCHING = "SEARCHING"
-    REACQUIRED = "REACQUIRED"
+    """The lifecycle stages a tracked target moves through."""
+
+    INIT = "INIT"              # before the first frame
+    READY = "READY"            # target selected, about to track
+    TRACKING = "TRACKING"      # actively following the target
+    LOST = "LOST"              # confidence collapsed; target gone
+    SEARCHING = "SEARCHING"    # scanning the frame to find it again
+    REACQUIRED = "REACQUIRED"  # just re-found; resumes tracking next frame
 
 
+# Which states each state is allowed to move to (anything else is a bug).
 _ALLOWED = {
     TrackerState.INIT: {TrackerState.READY},
     TrackerState.READY: {TrackerState.TRACKING},
@@ -62,6 +61,8 @@ _ALLOWED = {
 
 @dataclass(frozen=True)
 class TimelineEvent:
+    """One recorded state change: when it happened and why."""
+
     frame_index: int
     state: TrackerState
     reason: str
@@ -69,10 +70,13 @@ class TimelineEvent:
 
 @dataclass
 class StateMachine:
+    """Current state plus the running log of every transition (the timeline)."""
+
     state: TrackerState = TrackerState.INIT
     timeline: List[TimelineEvent] = field(default_factory=list)
 
     def to(self, new_state: TrackerState, frame_index: int, reason: str = "") -> None:
+        """Move to ``new_state`` and log it; no-op on a self-transition, error if illegal."""
         if new_state == self.state:
             return
         if new_state not in _ALLOWED[self.state]:
@@ -81,6 +85,7 @@ class StateMachine:
         self.timeline.append(TimelineEvent(frame_index, new_state, reason))
 
     def count(self, state: TrackerState) -> int:
+        """How many times the machine entered ``state`` (e.g. number of LOST events)."""
         return sum(1 for e in self.timeline if e.state == state)
 
 
@@ -96,11 +101,12 @@ class FpsMeter:
         self._max: Optional[float] = None
 
     def update(self, dt: float) -> float:
-        dt = max(dt, 1e-6)
+        """Record one frame's duration (seconds) and return the rolling FPS."""
+        dt = max(dt, 1e-6)  # guard against a zero duration -> division by zero
         fps = 1.0 / dt
         self._recent.append(fps)
         if len(self._recent) > self._window:
-            self._recent.pop(0)
+            self._recent.pop(0)  # keep only the last ``window`` frames
         self._total_time += dt
         self._frames += 1
         self._min = fps if self._min is None else min(self._min, fps)
@@ -109,18 +115,22 @@ class FpsMeter:
 
     @property
     def rolling(self) -> float:
+        """Average FPS over the recent window (what the live HUD shows)."""
         return sum(self._recent) / len(self._recent) if self._recent else 0.0
 
     @property
     def average(self) -> float:
+        """Average FPS over the whole run (total frames / total time)."""
         return self._frames / self._total_time if self._total_time > 0 else 0.0
 
     @property
     def min(self) -> float:
+        """Slowest single frame's FPS (0 before any frame)."""
         return self._min or 0.0
 
     @property
     def max(self) -> float:
+        """Fastest single frame's FPS (0 before any frame)."""
         return self._max or 0.0
 
 
@@ -140,6 +150,7 @@ class TrackingResult:
 
     @property
     def tracking_uptime(self) -> float:
+        """Fraction of frames the target was actively held (TRACKING or REACQUIRED)."""
         if self.frames_processed <= 0:
             return 0.0
         on = self.state_frame_counts.get("TRACKING", 0) + self.state_frame_counts.get("REACQUIRED", 0)
@@ -150,6 +161,7 @@ class TrackingPipeline:
     """Tracks one target, detecting loss and re-acquiring it when it returns."""
 
     def __init__(self, settings: Settings, backend: Optional[str] = None) -> None:
+        # An explicit backend (e.g. from --backend) overrides the configured one.
         if backend is not None:
             settings = replace(settings, tracker=replace(settings.tracker, backend=backend))
         self.settings = settings
@@ -158,7 +170,13 @@ class TrackingPipeline:
 
     def run(self, source: VideoSource, selector: TargetSelector, out_path: Optional[str] = None,
             show: bool = False, progress: Optional[ProgressCallback] = None,
-            debug: bool = False, debug_dir: Optional[str] = None) -> TrackingResult:
+            debug_dir: Optional[str] = None) -> TrackingResult:
+        """Track the selected target through ``source`` to EOF and return the stats.
+
+        Selects on the first frame, then streams the rest through the state
+        machine. ``out_path`` writes an annotated video, ``show`` displays it live
+        (Esc stops), ``debug_dir`` dumps per-SEARCHING-frame candidate overlays.
+        """
         st = self.settings
         scale = self.scale
         # estimateAffinePartial2D's RANSAC is seeded from the global cv2 RNG; fix it
@@ -185,6 +203,7 @@ class TrackingPipeline:
             usable_mask = cv2.bitwise_not(hud_mask) if hud_mask is not None else None
             fw, fh = first.shape[1], first.shape[0]
 
+            # Wire the per-target components off the initial patch.
             memory = AppearanceMemory(st.verifier)
             memory.initialise(first, bbox, hud_mask)
             verifier = Verifier(st.verifier, memory)
@@ -193,12 +212,13 @@ class TrackingPipeline:
             motion = GlobalMotionEstimator(st.motion)
             tracker = create_backend(st.tracker)
             tracker.init(first, bbox, usable_mask)
-            motion.update(first, bbox)  # prime the estimator
+            motion.update(first, bbox)  # prime the estimator with frame 0
 
             machine = StateMachine()
             machine.to(TrackerState.READY, 0, "target selected")
             machine.to(TrackerState.TRACKING, 0, "tracking started")
 
+            # Re-acquisition anti-thrash state (updated in _track / _search).
             self._last_reacquire_frame: Optional[int] = None
             self._failed_reacquires = 0
             self._suspended_until = 0
@@ -215,6 +235,7 @@ class TrackingPipeline:
             frame_index = 0
             frames_processed = 1
 
+            # Emit frame 0 (the selection) before streaming the rest.
             render_overlay(first, cur_bbox, trajectory, machine.state.value, 0.0, tracker.name,
                            confidence=confidence, seed_point=seed_point, reason=reason)
             state_counts[machine.state.value] += 1
@@ -228,10 +249,12 @@ class TrackingPipeline:
                     start = perf_counter()
                     state_before = machine.state
 
+                    # Ego-motion first: it feeds the tracker's scale and seeds the search.
                     transform = motion.update(frame, cur_bbox)
                     if machine.state == TrackerState.REACQUIRED:
                         machine.to(TrackerState.TRACKING, frame_index, "resumed")
 
+                    # Dispatch to the handler for the current state (READY/LOST just coast).
                     if machine.state == TrackerState.TRACKING:
                         cur_bbox, confidence, reason = self._track(
                             frame, frame_index, tracker, verifier, memory, detector,
@@ -249,6 +272,8 @@ class TrackingPipeline:
                     dt = perf_counter() - start
                     meter.update(dt)
                     state_counts[machine.state.value] += 1
+                    # Track FPS over non-SEARCHING frames separately (the real-time metric;
+                    # the heavy search only runs while lost).
                     if state_before != TrackerState.SEARCHING:
                         tracking_time += dt
                         tracking_frames += 1
@@ -260,7 +285,12 @@ class TrackingPipeline:
                 if writer is not None:
                     writer.release()
                 if show:
+                    # Tear the live window down *now* (before the caller opens the
+                    # temp preview). On macOS HighGUI only actually closes a window
+                    # once the event loop is pumped, so waitKey a few times.
                     cv2.destroyAllWindows()
+                    for _ in range(4):
+                        cv2.waitKey(1)
 
         return TrackingResult(
             frames_processed=frames_processed, avg_fps=meter.average, min_fps=meter.min,
@@ -271,10 +301,16 @@ class TrackingPipeline:
             tracking_fps=(tracking_frames / tracking_time) if tracking_time > 0 else 0.0,
         )
 
-    # -- per-state steps --------------------------------------------------
+    # Per-frame handlers, one per active state.
 
     def _track(self, frame, idx, tracker, verifier, memory, detector, machine,
                transform, cur_bbox, trajectory, hud_mask, usable_mask):
+        """One TRACKING frame: advance the tracker, fuse confidence, detect loss.
+
+        Returns ``(bbox, confidence, reason)``. Healthy -> learn the template;
+        confirmed-lost -> transition to SEARCHING (with anti-thrash bookkeeping);
+        merely suspect -> hold the last good box.
+        """
         tracker.set_scale_hint(transform.scale, transform.confidence)
         found, box, score = tracker.update(frame)
         if found:
@@ -294,13 +330,17 @@ class TrackingPipeline:
 
         if assessment.confirmed_lost:
             machine.to(TrackerState.LOST, idx, assessment.reason or "lost")
-            self._predicted = cur_bbox.center
+            self._predicted = cur_bbox.center  # seed the search at the last known centre
             cfg = self.settings.reacquire
+            # Losing the target again just after a re-lock means that re-lock was
+            # probably wrong — count it as a failed attempt.
             if (self._last_reacquire_frame is not None
                     and idx - self._last_reacquire_frame <= cfg.reacquire_probation_frames):
                 self._failed_reacquires += 1
             else:
                 self._failed_reacquires = 0
+            # After too many bad re-locks in a row, stop searching for a while so the
+            # box settles into LOST instead of flickering on/off.
             if self._failed_reacquires >= cfg.max_failed_reacquires:
                 self._suspended_until = idx + cfg.reacquire_cooldown_frames
                 self._failed_reacquires = 0
@@ -312,6 +352,12 @@ class TrackingPipeline:
 
     def _search(self, frame, idx, tracker, memory, detector, reacquirer, machine,
                 transform, cur_bbox, trajectory, hud_mask, usable_mask):
+        """One SEARCHING frame: run the throttled re-acquire search; re-lock on a hit.
+
+        Returns ``(bbox, confidence, reason)``. On a confirmed find, re-init the
+        tracker and transition to REACQUIRED; otherwise hold the last box (with a
+        ``[cooldown]`` tag while the anti-thrash suspension is active).
+        """
         cfg = self.settings.reacquire
         # Carry the prediction forward by camera motion (for the debug marker).
         if transform.confidence > 0:
@@ -333,16 +379,18 @@ class TrackingPipeline:
         tag = " [cooldown]" if suspended else ""
         return cur_bbox, 0.0, f"searching{tag}"
 
-    # -- helpers ----------------------------------------------------------
+    # Output, display, and debug-dump helpers.
 
     @staticmethod
     def _scale_mask(mask, shape):
+        """Resize a HUD mask to match the working frame size (nearest-neighbour)."""
         h, w = shape[:2]
         if mask.shape[:2] == (h, w):
             return mask
         return cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
 
     def _save_debug(self, debug_dir, idx, frame, reacquirer) -> None:
+        """Write a debug image of this frame's re-acquire candidates to disk."""
         import os
         vis = frame.copy()
         draw_debug_search(vis, None, reacquirer.last_candidates, reacquirer.last_accepted,
@@ -350,6 +398,7 @@ class TrackingPipeline:
         cv2.imwrite(os.path.join(debug_dir, f"search_{idx:05d}.png"), vis)
 
     def _make_writer(self, out_path, w, h, fps) -> cv2.VideoWriter:
+        """Open an mp4 writer for the annotated output (falls back to 30 FPS if unknown)."""
         writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"),
                                  fps if fps > 0 else 30.0, (w, h))
         if not writer.isOpened():
@@ -357,6 +406,7 @@ class TrackingPipeline:
         return writer
 
     def _emit(self, frame, writer, show) -> bool:
+        """Write and/or display a frame; return False if the user pressed Esc (stop)."""
         if writer is not None:
             writer.write(frame)
         if show:
@@ -367,5 +417,6 @@ class TrackingPipeline:
 
     @staticmethod
     def _report(progress, done, total) -> None:
+        """Forward progress to the optional callback (no-op if none was given)."""
         if progress is not None:
             progress(done, total)

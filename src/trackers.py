@@ -15,13 +15,10 @@ Every backend implements: ``init(frame, bbox, usable_mask)`` /
 """
 
 from __future__ import annotations
-
 import os
-from typing import Callable, Dict, List, Optional, Tuple
-
+from typing import Callable, Dict, Optional, Tuple
 import cv2
 import numpy as np
-
 from config import REPO_ROOT, TrackerConfig
 from geometry import BBox, bbox_from_center_wh, clamp_bbox
 
@@ -34,12 +31,18 @@ class TrackerNotAvailableError(RuntimeError):
 
 
 def _resolve(path: str) -> Optional[Callable]:
+    """Look up a dotted attribute on ``cv2`` (e.g. "legacy.TrackerCSRT_create"), or None."""
     obj = cv2
     for part in path.split("."):
         obj = getattr(obj, part, None)
         if obj is None:
             return None
     return obj if callable(obj) else None
+
+
+def _csrt_ctor() -> Optional[Callable]:
+    """The CSRT constructor from whichever cv2 namespace has it, or None if absent."""
+    return next((c for c in (_resolve(p) for p in _CSRT_PATHS) if c), None)
 
 
 def _model_path(path: str) -> str:
@@ -50,11 +53,12 @@ def _model_path(path: str) -> str:
 
 
 def _to_bbox(box) -> BBox:
+    """Convert an OpenCV ``(x, y, w, h)`` tuple into our BBox type."""
     x, y, w, h = box
     return BBox(float(x), float(y), float(w), float(h))
 
 
-# -- flow-based scale estimator ---------------------------------------------
+# Flow-based scale estimator: the "size" half of the hybrid tracker.
 
 _LK = dict(winSize=(21, 21), maxLevel=3,
            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03))
@@ -84,6 +88,7 @@ class FlowTracker:
         self.box: Optional[list] = None
 
     def init(self, frame, box: BBox, usable_mask=None) -> None:
+        """Seed the feature cloud from the first frame's box."""
         if usable_mask is not None:
             self.usable = usable_mask
         self.prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -95,14 +100,17 @@ class FlowTracker:
         self.box = [box.x, box.y, box.w, box.h]
 
     def update(self, frame) -> Optional[Tuple[float, float, float, float]]:
+        """Advance the feature cloud one frame; return (cx, cy, scale, score) or None."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Ensure we have enough features to work with, re-detecting if depleted.
         min_f = self.cfg.flow_min_features
         if self.pts is None or len(self.pts) < min_f:
             self.pts = self._detect(self.prev_gray, self.box)
         if self.pts is None or len(self.pts) < min_f:
             self.prev_gray = gray
-            return None
+            return None  # not enough texture to estimate motion this frame
 
+        # Track the in-box features forward, then fit their similarity transform.
         nxt, st, _ = cv2.calcOpticalFlowPyrLK(self.prev_gray, gray, self.pts, None, **_LK)
         result = None
         if nxt is not None and st is not None:
@@ -112,15 +120,18 @@ class FlowTracker:
                 M, inl = cv2.estimateAffinePartial2D(p0, p1, method=cv2.RANSAC,
                                                      ransacReprojThreshold=3)
                 if M is not None:
+                    # Scale = magnitude of the transform's linear part (the per-frame zoom).
                     s = float(np.clip(np.hypot(M[0, 0], M[0, 1]),
                                       self.cfg.flow_scale_min, self.cfg.flow_scale_max))
+                    # Move the box centre by the same transform.
                     cx, cy = self.box[0] + self.box[2] / 2, self.box[1] + self.box[3] / 2
                     ncx = float(M[0, 0] * cx + M[0, 1] * cy + M[0, 2])
                     ncy = float(M[1, 0] * cx + M[1, 1] * cy + M[1, 2])
                     inl = inl.reshape(-1).astype(bool)
                     n_in = int(inl.sum())
-                    self.pts = p1[inl].reshape(-1, 1, 2)
+                    self.pts = p1[inl].reshape(-1, 1, 2)  # keep inliers for the next frame
                     result = (ncx, ncy, s, min(1.0, n_in / self.cfg.flow_score_norm))
+        # Re-seed features once too few survive (target grew, drifted, or lost texture).
         if self.pts is not None and len(self.pts) < self.cfg.flow_replenish_below:
             fresh = self._detect(gray, self.box)
             if fresh is not None and (self.pts is None or len(fresh) > len(self.pts)):
@@ -129,10 +140,12 @@ class FlowTracker:
         return result
 
     def _detect(self, gray, box) -> Optional[np.ndarray]:
+        """Find fresh corner features to track, but only inside the (HUD-safe) box."""
         if gray is None or box is None:
             return None
         x, y, w, h = (int(v) for v in box)
         x, y = max(0, x), max(0, y)
+        # Restrict detection to the box, minus any HUD pixels.
         m = np.zeros(gray.shape, np.uint8)
         m[y:y + h, x:x + w] = 255
         if self.usable is not None:
@@ -141,7 +154,7 @@ class FlowTracker:
                                        qualityLevel=0.01, minDistance=5, mask=m, blockSize=7)
 
 
-# -- backends ---------------------------------------------------------------
+# Concrete backends: deep (ViT/Nano), classical CSRT, and the hybrid of both.
 
 class _DeepTracker:
     """Wraps cv2.TrackerVit / TrackerNano -> (found, BBox, native score)."""
@@ -153,6 +166,7 @@ class _DeepTracker:
         self.last_score = 0.0   # identity-ish score, for the template-update gate
 
     def _create(self):
+        """Build the OpenCV tracker object, erroring clearly if its model is missing."""
         if self.kind == "nano":
             bb, hd = _model_path(self.cfg.nano_backbone), _model_path(self.cfg.nano_head)
             if not (os.path.exists(bb) and os.path.exists(hd)):
@@ -170,23 +184,26 @@ class _DeepTracker:
         return cv2.TrackerVit_create(p)
 
     def init(self, frame, bbox: BBox, usable_mask=None) -> None:
+        """Create the tracker and lock it onto the initial box."""
         self._impl = self._create()
         self._impl.init(frame, tuple(int(v) for v in bbox.as_int_xywh()))
 
     def update(self, frame) -> Tuple[bool, BBox, float]:
+        """Advance one frame -> (found, box, native confidence score)."""
         found, box = self._impl.update(frame)
         try:
             score = float(self._impl.getTrackingScore())
         except Exception:
-            score = 1.0 if found else 0.0
+            score = 1.0 if found else 0.0  # some builds don't expose a score
         self.last_score = score
         return bool(found), _to_bbox(box), score
 
     def reinit(self, frame, bbox: BBox, usable_mask=None) -> None:
+        """Restart tracking from a new box (used after a re-acquisition)."""
         self.init(frame, bbox, usable_mask)
 
     def set_scale_hint(self, scale: float, confidence: float) -> None:
-        pass
+        pass  # deep trackers size their own box; the ego-scale hint is unused
 
     @property
     def name(self) -> str:
@@ -202,7 +219,8 @@ class _CsrtTracker:
         self.last_score = 1.0
 
     def init(self, frame, bbox: BBox, usable_mask=None) -> None:
-        ctor = next((c for c in (_resolve(p) for p in _CSRT_PATHS) if c), None)
+        """Create a CSRT tracker (from cv2 or cv2.legacy) and lock it onto the box."""
+        ctor = _csrt_ctor()
         if ctor is None:
             raise TrackerNotAvailableError(
                 "CSRT unavailable. Install 'opencv-contrib-python' (not headless).")
@@ -210,14 +228,16 @@ class _CsrtTracker:
         self._impl.init(frame, bbox.as_int_xywh())
 
     def update(self, frame) -> Tuple[bool, BBox, float]:
+        """Advance one frame; CSRT has no score, so report 1.0 found / 0.0 lost."""
         ok, box = self._impl.update(frame)
         return (True, _to_bbox(box), 1.0) if ok else (False, BBox(0, 0, 1, 1), 0.0)
 
     def reinit(self, frame, bbox: BBox, usable_mask=None) -> None:
+        """Restart tracking from a new box (used after a re-acquisition)."""
         self.init(frame, bbox, usable_mask)
 
     def set_scale_hint(self, scale: float, confidence: float) -> None:
-        pass
+        pass  # CSRT sizes its own box; the ego-scale hint is unused
 
     @property
     def name(self) -> str:
@@ -246,18 +266,22 @@ class HybridTracker:
         self.last_score = 0.0   # ViT identity score (NOT the flow presence)
 
     def init(self, frame, bbox: BBox, usable_mask=None) -> None:
+        """Initialise both sub-trackers and remember the starting centre + size."""
         self.deep.init(frame, bbox)
         self.flow.init(frame, bbox, usable_mask)
         self.cx, self.cy = bbox.center
         self.w, self.h = float(bbox.w), float(bbox.h)
 
     def reinit(self, frame, bbox: BBox, usable_mask=None) -> None:
+        """Restart both sub-trackers from a new box (used after re-acquisition)."""
         self.init(frame, bbox, usable_mask)
 
     def set_scale_hint(self, scale: float, confidence: float) -> None:
+        """Receive the camera's zoom estimate, used to damp the flow scale."""
         self._ego_scale, self._ego_conf = scale, confidence
 
     def update(self, frame) -> Tuple[bool, BBox, float]:
+        """Fuse the ViT centre and flow size into one box -> (found, box, score)."""
         H, W = frame.shape[:2]
         flow = self.flow.update(frame)              # (cx, cy, scale, score) or None
         found_v, dbox, vscore = self.deep.update(frame)
@@ -271,13 +295,17 @@ class HybridTracker:
         # Scale: local flow, damped by the global ego scale (both measure the zoom).
         s = flow[2] if flow is not None else 1.0
         if self.cfg.scale_cross_check and self._ego_conf > 0:
+            # Geometric mean blends the two zoom estimates (local flow + camera).
             s = float(np.sqrt(max(s, 1e-6) * max(self._ego_scale, 1e-6)))
+        # Apply the zoom, keeping the box between a min size and the frame size.
         cap = float(min(W, H))
         self.w = float(np.clip(self.w * s, self.cfg.min_box, cap))
         self.h = float(np.clip(self.h * s, self.cfg.min_box, cap))
 
-        box = clamp_bbox(bbox_from_center_wh(self.cx, self.cy, self.w, self.h), W, H)
-        self.flow.set_box(bbox_from_center_wh(self.cx, self.cy, self.w, self.h))
+        # Assemble the fused box; the flow tracker re-anchors on the raw (unclamped) box.
+        fused = bbox_from_center_wh(self.cx, self.cy, self.w, self.h)
+        box = clamp_bbox(fused, W, H)
+        self.flow.set_box(fused)
         flow_score = flow[3] if flow is not None else 0.0
         # last_score is the ViT identity (gates template learning); the returned
         # presence score also credits flow (carries the target through the phase
@@ -306,9 +334,9 @@ def probe_backends(cfg: Optional[TrackerConfig] = None) -> Dict[str, bool]:
     """Report which backends can actually be constructed in this build."""
     cfg = cfg or TrackerConfig()
     result: Dict[str, bool] = {}
-    # CSRT
+    # CSRT: present if the constructor exists and actually builds a tracker.
     try:
-        ctor = next((c for c in (_resolve(p) for p in _CSRT_PATHS) if c), None)
+        ctor = _csrt_ctor()
         ctor and ctor()
         result["csrt"] = ctor is not None
     except Exception:

@@ -27,12 +27,3 @@ dbg_*/
 .DS_Store
 .idea/
 .vscode/
-
-#guides
-guides/
-
-#benchmarks
-benchmarks/
-
-#tests
-tests/

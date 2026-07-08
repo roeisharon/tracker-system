@@ -1,4 +1,0 @@
-# Development dependencies (tests, tooling). Install on top of requirements.txt:
-#   pip install -r requirements.txt -r requirements-dev.txt
--r requirements.txt
-pytest==9.1.1
